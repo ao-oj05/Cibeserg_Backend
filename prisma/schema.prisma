@@ -1,0 +1,167 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum ScanStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum FindingStatus {
+  PASSED
+  FAILED
+}
+
+enum FindingSeverity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum ReportType {
+  EXECUTIVE
+  TECHNICAL
+  COMPARATIVE
+}
+
+enum NotificationType {
+  HIGH_RISK_ALERT
+  CERTIFICATE_EXPIRING
+  SCAN_COMPLETED
+  SYSTEM
+}
+
+enum AuditAction {
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  SCAN_STARTED
+  SCAN_COMPLETED
+  REPORT_GENERATED
+}
+
+model User {
+  id           String         @id @default(uuid())
+  email        String         @unique
+  passwordHash String
+  name         String?
+  role         UserRole       @default(USER)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  scans        Scan[]
+  reports      Report[]
+  notifications Notification[]
+  auditLogs    AuditLog[]
+
+  @@map("users")
+}
+
+model Scan {
+  id             String        @id @default(uuid())
+  userId         String
+  targetUrl      String
+  host           String
+  ipAddress      String?
+  riskScore      Int           @default(0) // 0 to 100
+  status         ScanStatus    @default(PENDING)
+  responseTimeMs Int?
+  httpsRedirect  Boolean       @default(false)
+  sslValid       Boolean       @default(false)
+  sslIssuer      String?
+  sslDaysLeft    Int?
+  sslProtocol    String?
+  startedAt      DateTime      @default(now())
+  completedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  findings       Finding[]
+  reports        Report[]
+
+  @@index([userId, host])
+  @@index([userId, createdAt])
+  @@map("scans")
+}
+
+model Finding {
+  id          String          @id @default(uuid())
+  scanId      String
+  category    String          // HTTP_HEADERS, TLS_SSL, CONNECTION, SSRF
+  ruleKey     String          // HSTS, CSP, X_FRAME_OPTIONS, etc.
+  title       String
+  description String
+  status      FindingStatus   // PASSED, FAILED
+  severity    FindingSeverity @default(MEDIUM)
+  remediation String?
+  rawData     Json?
+  createdAt   DateTime        @default(now())
+
+  scan        Scan            @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@map("findings")
+}
+
+model Report {
+  id        String     @id @default(uuid())
+  userId    String
+  scanId    String?
+  type      ReportType @default(EXECUTIVE)
+  fileName  String
+  filePath  String
+  expiresAt DateTime
+  createdAt DateTime   @default(now())
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scan      Scan?      @relation(fields: [scanId], references: [id], onDelete: SetNull)
+
+  @@index([userId, expiresAt])
+  @@map("reports")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  type      NotificationType @default(SYSTEM)
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id        String      @id @default(uuid())
+  userId    String?
+  action    AuditAction
+  ipAddress String?
+  userAgent String?
+  metadata  Json?
+  createdAt DateTime    @default(now())
+
+  user      User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

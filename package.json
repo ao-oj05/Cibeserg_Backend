@@ -1,0 +1,36 @@
+{
+  "name": "scandev-backend",
+  "version": "1.0.0",
+  "description": "ScanDev - Core Backend & RESTful API for passive cybersecurity audits",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^6.3.1",
+    "@prisma/client": "^6.3.1",
+    "argon2": "^0.41.1",
+    "jose": "^5.9.6",
+    "next": "^15.1.6",
+    "pdfkit": "^0.16.0",
+    "pg": "^8.13.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.10",
+    "@types/pdfkit": "^0.13.9",
+    "@types/pg": "^8.11.11",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "prisma": "^6.3.1",
+    "typescript": "^5.7.3"
+  }
+}
