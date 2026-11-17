@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 import { UpdateNotificationsSchema } from "@/lib/validators";
+import { NotificationService } from "@/services/notification.service";
 
 /**
  * GET /api/notifications
- * Retrieves unread security alerts and notifications for the user (BK-05)
+ * Delegates to NotificationService.getUnread (BK-05)
  */
 export async function GET(req: NextRequest) {
   try {
@@ -14,30 +14,17 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
 
-    const notifications = await prisma.notification.findMany({
-      where: {
-        userId: session.userId,
-        isRead: false,
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    return NextResponse.json({
-      data: notifications,
-      unreadCount: notifications.length,
-    });
+    const result = await NotificationService.getUnread(session.userId);
+    return NextResponse.json(result);
   } catch (err: unknown) {
     console.error("[Notifications:GET] Error:", err);
-    return NextResponse.json(
-      { error: "Error al recuperar notificaciones" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Error al recuperar notificaciones" }, { status: 500 });
   }
 }
 
 /**
  * PATCH /api/notifications
- * Marks notifications as read
+ * Delegates to NotificationService.markAsRead
  */
 export async function PATCH(req: NextRequest) {
   try {
@@ -49,44 +36,14 @@ export async function PATCH(req: NextRequest) {
     const body = await req.json();
     const parseResult = UpdateNotificationsSchema.safeParse(body);
 
-    if (!parseResult.success) {
-      // If no specific IDs provided, mark ALL unread notifications as read for this user
-      await prisma.notification.updateMany({
-        where: {
-          userId: session.userId,
-          isRead: false,
-        },
-        data: {
-          isRead: true,
-        },
-      });
-
-      return NextResponse.json({
-        message: "Todas las notificaciones fueron marcadas como leídas",
-      });
-    }
-
-    const { notificationIds } = parseResult.data;
-
-    // Update only notifications owned by the authenticated user
-    const updated = await prisma.notification.updateMany({
-      where: {
-        id: { in: notificationIds },
-        userId: session.userId,
-      },
-      data: {
-        isRead: true,
-      },
-    });
+    const notificationIds = parseResult.success ? parseResult.data.notificationIds : undefined;
+    const { count } = await NotificationService.markAsRead(session.userId, notificationIds);
 
     return NextResponse.json({
-      message: `${updated.count} notificaciones actualizadas como leídas`,
+      message: `${count} notificaciones actualizadas como leídas`,
     });
   } catch (err: unknown) {
     console.error("[Notifications:PATCH] Error:", err);
-    return NextResponse.json(
-      { error: "Error al actualizar notificaciones" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Error al actualizar notificaciones" }, { status: 500 });
   }
 }

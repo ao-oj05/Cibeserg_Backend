@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
+import { ScanService } from "@/services/scan.service";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -8,7 +8,7 @@ interface RouteParams {
 
 /**
  * GET /api/scans/[id]
- * Retrieves details and findings for a specific scan belonging to the user (BK-05)
+ * Delegates to ScanService.getScanDetail (BK-05)
  */
 export async function GET(req: NextRequest, { params }: RouteParams) {
   try {
@@ -18,39 +18,22 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     }
 
     const { id } = await params;
-
-    const scan = await prisma.scan.findFirst({
-      where: {
-        id,
-        userId: session.userId, // Strict data isolation (BK-05)
-      },
-      include: {
-        findings: {
-          orderBy: { createdAt: "asc" },
-        },
-      },
-    });
-
-    if (!scan) {
-      return NextResponse.json(
-        { error: "Escaneo no encontrado o no tiene permisos para acceder a él" },
-        { status: 404 }
-      );
-    }
+    const scan = await ScanService.getScanDetail(session.userId, id);
 
     return NextResponse.json({ data: scan });
   } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Error al consultar el escaneo";
+    if (message.startsWith("NOT_FOUND:")) {
+      return NextResponse.json({ error: message.replace("NOT_FOUND:", "") }, { status: 404 });
+    }
     console.error("[Scans:GET_ID] Error:", err);
-    return NextResponse.json(
-      { error: "Error al recuperar el detalle del escaneo" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Error interno al recuperar el escaneo" }, { status: 500 });
   }
 }
 
 /**
  * DELETE /api/scans/[id]
- * Deletes a scan and its associated findings
+ * Delegates to ScanService.deleteScan (BK-05)
  */
 export async function DELETE(req: NextRequest, { params }: RouteParams) {
   try {
@@ -60,35 +43,17 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
     }
 
     const { id } = await params;
-
-    // Verify ownership first
-    const scan = await prisma.scan.findFirst({
-      where: {
-        id,
-        userId: session.userId,
-      },
-    });
-
-    if (!scan) {
-      return NextResponse.json(
-        { error: "Escaneo no encontrado o no autorizado" },
-        { status: 404 }
-      );
-    }
-
-    // Delete scan (findings cascade automatically)
-    await prisma.scan.delete({
-      where: { id },
-    });
+    await ScanService.deleteScan(session.userId, id);
 
     return NextResponse.json({
       message: "Escaneo y hallazgos eliminados correctamente",
     });
   } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Error al eliminar el escaneo";
+    if (message.startsWith("NOT_FOUND:")) {
+      return NextResponse.json({ error: message.replace("NOT_FOUND:", "") }, { status: 404 });
+    }
     console.error("[Scans:DELETE_ID] Error:", err);
-    return NextResponse.json(
-      { error: "Error al eliminar el escaneo" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Error interno al eliminar el escaneo" }, { status: 500 });
   }
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
 import { getSessionUser, AUTH_COOKIE_NAME } from "@/lib/auth";
+import { AuthService } from "@/services/auth.service";
 
 export async function POST(req: NextRequest) {
   const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "127.0.0.1";
@@ -8,23 +8,15 @@ export async function POST(req: NextRequest) {
 
   const session = await getSessionUser(req);
 
-  if (session) {
-    await prisma.auditLog.create({
-      data: {
-        userId: session.userId,
-        action: "LOGOUT",
-        ipAddress,
-        userAgent,
-      },
-    });
-  }
+  await AuthService.logout(session?.userId || null, {
+    ipAddress,
+    userAgent,
+  });
 
   const response = NextResponse.json({
     message: "Sesión cerrada correctamente",
   });
 
-  // Clear cookie
   response.cookies.delete(AUTH_COOKIE_NAME);
-
   return response;
 }

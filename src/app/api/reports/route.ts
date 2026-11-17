@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 import { CreateReportSchema } from "@/lib/validators";
-import { generateSecurityPdfReport } from "@/services/report-generator";
-import crypto from "crypto";
+import { ReportService } from "@/services/report.service";
 
 /**
  * GET /api/reports
- * Lists all generated reports belonging to the user
+ * Delegates to ReportService.listReports (BK-05)
  */
 export async function GET(req: NextRequest) {
   try {
@@ -16,36 +14,17 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
 
-    const reports = await prisma.report.findMany({
-      where: {
-        userId: session.userId, // Mandatory data isolation (BK-05)
-      },
-      orderBy: { createdAt: "desc" },
-      include: {
-        scan: {
-          select: {
-            id: true,
-            host: true,
-            riskScore: true,
-            targetUrl: true,
-          },
-        },
-      },
-    });
-
+    const reports = await ReportService.listReports(session.userId);
     return NextResponse.json({ data: reports });
   } catch (err: unknown) {
     console.error("[Reports:GET] Error:", err);
-    return NextResponse.json(
-      { error: "Error al consultar los reportes" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Error al consultar los reportes" }, { status: 500 });
   }
 }
 
 /**
  * POST /api/reports
- * Generates a new PDF report and registers it with 7-day expiration
+ * Delegates to ReportService.generateReport (BK-07)
  */
 export async function POST(req: NextRequest) {
   try {
@@ -64,63 +43,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { scanId, type } = parseResult.data;
-
-    let scanData = null;
-    if (scanId) {
-      scanData = await prisma.scan.findFirst({
-        where: {
-          id: scanId,
-          userId: session.userId, // Strictly verify ownership
-        },
-        include: {
-          findings: true,
-        },
-      });
-
-      if (!scanData) {
-        return NextResponse.json(
-          { error: "El escaneo especificado no existe o no pertenece al usuario" },
-          { status: 404 }
-        );
-      }
-    }
-
-    const reportUuid = crypto.randomUUID();
-
-    // Generate physical PDF in private storage/reports
-    const { fileName, filePath } = await generateSecurityPdfReport({
-      reportId: reportUuid,
-      type,
-      scan: scanData,
-      userEmail: session.email,
-    });
-
-    // Expiration date: +7 days from now (BK-07)
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
-
-    // Save report record in PostgreSQL
-    const report = await prisma.report.create({
-      data: {
-        id: reportUuid,
-        userId: session.userId,
-        scanId: scanId || null,
-        type,
-        fileName,
-        filePath,
-        expiresAt,
-      },
-    });
-
-    // Log in AuditLog
-    await prisma.auditLog.create({
-      data: {
-        userId: session.userId,
-        action: "REPORT_GENERATED",
-        metadata: { reportId: report.id, type, scanId },
-      },
-    });
+    const report = await ReportService.generateReport(
+      session.userId,
+      session.email,
+      parseResult.data
+    );
 
     return NextResponse.json(
       {
@@ -130,10 +57,11 @@ export async function POST(req: NextRequest) {
       { status: 201 }
     );
   } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Error al generar reporte";
+    if (message.startsWith("NOT_FOUND:")) {
+      return NextResponse.json({ error: message.replace("NOT_FOUND:", "") }, { status: 404 });
+    }
     console.error("[Reports:POST] Error:", err);
-    return NextResponse.json(
-      { error: "Error al generar el reporte PDF" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Error al generar el reporte PDF" }, { status: 500 });
   }
 }

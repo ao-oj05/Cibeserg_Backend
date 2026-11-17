@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
-import { checkRateLimit } from "@/lib/rate-limit";
-import { CreateScanSchema, ScanQuerySchema, escapeSqlLike } from "@/lib/validators";
-import { executeSecurityScan } from "@/services/scanner";
+import { CreateScanSchema, ScanQuerySchema } from "@/lib/validators";
+import { ScanService } from "@/services/scan.service";
 
 /**
  * GET /api/scans
- * Returns paginated scan history for the authenticated user (BK-05)
+ * Delegates to ScanService.listUserScans (BK-05)
  */
 export async function GET(req: NextRequest) {
   try {
@@ -30,75 +28,17 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const { page, limit, host } = queryResult.data;
-    const skip = (page - 1) * limit;
-
-    const whereClause: {
-      userId: string;
-      host?: { contains: string; mode: "insensitive" };
-    } = {
-      userId: session.userId, // Mandatory data isolation (BK-05)
-    };
-
-    if (host) {
-      const sanitizedHost = escapeSqlLike(host);
-      whereClause.host = {
-        contains: sanitizedHost,
-        mode: "insensitive",
-      };
-    }
-
-    const [scans, totalCount] = await Promise.all([
-      prisma.scan.findMany({
-        where: whereClause,
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: limit,
-        select: {
-          id: true,
-          targetUrl: true,
-          host: true,
-          ipAddress: true,
-          riskScore: true,
-          status: true,
-          responseTimeMs: true,
-          httpsRedirect: true,
-          sslValid: true,
-          sslIssuer: true,
-          sslDaysLeft: true,
-          sslProtocol: true,
-          startedAt: true,
-          completedAt: true,
-          createdAt: true,
-          _count: {
-            select: { findings: true },
-          },
-        },
-      }),
-      prisma.scan.count({ where: whereClause }),
-    ]);
-
-    return NextResponse.json({
-      data: scans,
-      meta: {
-        page,
-        limit,
-        total: totalCount,
-        totalPages: Math.ceil(totalCount / limit),
-      },
-    });
+    const result = await ScanService.listUserScans(session.userId, queryResult.data);
+    return NextResponse.json(result);
   } catch (err: unknown) {
     console.error("[Scans:GET] Error:", err);
-    return NextResponse.json(
-      { error: "Error al consultar historial de escaneos" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Error al consultar historial de escaneos" }, { status: 500 });
   }
 }
 
 /**
  * POST /api/scans
- * Triggers a new passive cybersecurity scan
+ * Delegates to ScanService.startScan (BK-01, BK-02, BK-03)
  */
 export async function POST(req: NextRequest) {
   try {
@@ -109,19 +49,6 @@ export async function POST(req: NextRequest) {
 
     const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "127.0.0.1";
 
-    // 1. Rate Limiting Check (BK-02)
-    const rateLimit = checkRateLimit(`scan:${session.userId}`, { limit: 10, windowMs: 60_000 });
-    if (!rateLimit.success) {
-      return NextResponse.json(
-        {
-          error: "Límite de escaneos excedido. Máximo 10 escaneos por minuto.",
-          resetInMs: rateLimit.resetMs,
-        },
-        { status: 429 }
-      );
-    }
-
-    // 2. Validate Target URL with Zod (BK-03)
     const body = await req.json();
     const parseResult = CreateScanSchema.safeParse(body);
 
@@ -135,33 +62,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { targetUrl } = parseResult.data;
-
-    // Log scan request in AuditLog
-    await prisma.auditLog.create({
-      data: {
-        userId: session.userId,
-        action: "SCAN_STARTED",
-        ipAddress,
-        metadata: { targetUrl },
-      },
-    });
-
-    // 3. Execute Security Scan via Orchestrator (SSRF Guard + parallel checks)
-    const scan = await executeSecurityScan({
-      userId: session.userId,
-      targetUrl,
-    });
-
-    // Log scan completed
-    await prisma.auditLog.create({
-      data: {
-        userId: session.userId,
-        action: "SCAN_COMPLETED",
-        ipAddress,
-        metadata: { scanId: scan.id, riskScore: scan.riskScore },
-      },
-    });
+    const scan = await ScanService.startScan(
+      session.userId,
+      parseResult.data.targetUrl,
+      ipAddress
+    );
 
     return NextResponse.json(
       {
@@ -171,12 +76,16 @@ export async function POST(req: NextRequest) {
       { status: 201 }
     );
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : "Error durante la ejecución del escaneo";
-    console.error("[Scans:POST] Error:", err);
+    const message = err instanceof Error ? err.message : "Error durante la ejecución del escaneo";
 
-    return NextResponse.json(
-      { error: errorMsg },
-      { status: errorMsg.includes("SSRF") || errorMsg.includes("bloqueado") ? 403 : 500 }
-    );
+    if (message.startsWith("RATE_LIMIT:")) {
+      return NextResponse.json({ error: message.replace("RATE_LIMIT:", "") }, { status: 429 });
+    }
+    if (message.includes("SSRF") || message.includes("bloqueado")) {
+      return NextResponse.json({ error: message }, { status: 403 });
+    }
+
+    console.error("[Scans:POST] Error:", err);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
