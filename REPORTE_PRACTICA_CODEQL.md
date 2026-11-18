@@ -32,6 +32,35 @@ La auditoría se implementó de forma automatizada mediante un pipeline de Integ
 
 ---
 
+## 3. Evidencias de Ejecución Paso a Paso en Visual Studio Code
+
+### Paso 1: Instalación de la Extensión Oficial de CodeQL en VS Code
+Se accedió al Marketplace de Visual Studio Code para buscar e instalar la extensión oficial **CodeQL** (desarrollada por GitHub), la cual provee el soporte para el lenguaje semántico QL, gestión de bases de datos de código y visualización gráfica del panel de resultados (*QL Query Results*).
+
+![Paso 1: Instalación de la extensión CodeQL en Visual Studio Code](docs/capturas/paso1_extension_codeql.jpg)
+
+### Paso 2: Apertura del Proyecto y Definición de la Consulta Semántica QL
+Se abrió el espacio de trabajo en Visual Studio Code conteniendo la estructura del backend de ScanDev y se cargó la consulta semántica personalizada `codeql-custom-queries/DetectSSRF.ql`. Esta consulta modela y rastrea el flujo de datos no confiables hacia peticiones de red salientes (`fetch`) para identificar vectores de *Server-Side Request Forgery* (CWE-918). En la barra inferior de estado se constata la inicialización automática del compilador y motor de análisis semántico **CodeQL CLI v2.27.4**.
+
+![Paso 2: Consulta semántica QL abierta en VS Code](docs/capturas/paso2_consulta_ql_abierta.jpg)
+
+### Paso 3: Exploración del Panel CodeQL y Gestión de Bases de Datos
+Se abrió la vista dedicada de CodeQL en la barra lateral de Visual Studio Code. En este panel se observa la indexación del espacio de trabajo con la consulta `codeql-custom-queries/DetectSSRF.ql [javascript]` lista para ser evaluada, y la sección **DATABASES** para enlazar la base de datos semántica del código fuente.
+
+![Paso 3: Panel lateral de CodeQL y gestión de bases de datos](docs/capturas/paso3_panel_codeql.jpg)
+
+### Paso 4: Base de Datos Semántica scandev-db Enlazada y Activa
+Se importó e indexó exitosamente la base de datos de código fuente **`scandev-db [javascript]`** correspondiente a los servicios del backend. Como se evidencia en el panel lateral de Visual Studio Code, la base de datos figura con la marca de verificación activa (✔), lo que habilita la ejecución de consultas semánticas QL directamente sobre el Árbol de Sintaxis Abstracta (AST) del proyecto.
+
+![Paso 4: Base de datos CodeQL scandev-db cargada exitosamente](docs/capturas/paso4_base_datos_cargada.jpg)
+
+### Paso 5: Ejecución de la Consulta Semántica y Resultados en Vivo (QL Query Results)
+Se ejecutó la consulta `DetectSSRF.ql` contra la base de datos `scandev-db`. El motor CodeQL completó la evaluación en 0 segundos y desplegó en el panel **CodeQL Query Results** las 4 coincidencias exactas donde se detectaron llamadas de red salientes (`fetch`) dentro de `connection.ts` y `http-headers.ts`, alertando la necesidad de validación estricta de SSRF.
+
+![Paso 5: Resultados de la consulta semántica CodeQL en VS Code](docs/capturas/paso5_resultados_codeql.jpg)
+
+---
+
 ## 3. Consulta Semántica de CodeQL Desarrollada
 
 Uno de los requerimientos clave de la práctica consiste en:
