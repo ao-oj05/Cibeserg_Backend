@@ -1,228 +1,286 @@
-import tls from "tls";
+/**
+ * @module tls-inspector
+ * @description Auditoría TLS: 3 comprobaciones (CR-15, CR-16, CR-17).
+ *   CR-15 — Validez del certificado (cadena de confianza)
+ *   CR-16 — Días hasta expiración con umbrales por severidad
+ *   CR-17 — Versión del protocolo TLS (1.2 o 1.3)
+ *
+ * Seguridad aplicada:
+ * - BK-02: Timeout configurable (5 s por defecto)
+ * - BK-06: Errores de red → Finding FAILED genérico sin detalles internos
+ */
 
-export interface TLSFinding {
-  ruleKey: string;
-  category: "TLS_SSL";
+import * as tls from 'tls';
+import * as net from 'net';
+import { FindingStatus, FindingSeverity } from '@prisma/client';
+
+export interface TlsFinding {
+  checkKey: string;
+  category: 'TLS_SSL';
   title: string;
   description: string;
-  status: "PASSED" | "FAILED";
-  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+  status: FindingStatus;
+  severity: FindingSeverity;
   remediation?: string;
-  rawData?: Record<string, unknown>;
+  evidence?: Record<string, unknown>;
 }
 
-export interface TLSInspectionResult {
-  sslValid: boolean;
-  sslIssuer: string | null;
+export interface TlsInspectionResult {
+  findings: TlsFinding[];
+  /** Días restantes hasta expiración (null si no se pudo obtener) */
   sslDaysLeft: number | null;
+  /** true si el certificado es válido y de confianza */
+  sslValid: boolean;
+  /** Protocolo TLS negociado (ej: "TLSv1.3") */
   sslProtocol: string | null;
-  findings: TLSFinding[];
+  /** Emisor del certificado */
+  sslIssuer: string | null;
 }
+
+const CONNECT_TIMEOUT_MS = 5_000;
+const SAFE_PROTOCOLS = new Set(['TLSv1.2', 'TLSv1.3']);
 
 /**
- * Connects directly to port 443 via TLS socket to audit SSL certificate and cipher protocols
+ * Conecta al host:443 con TLS y obtiene información del certificado.
+ * Lanza error si el tiempo de conexión supera CONNECT_TIMEOUT_MS.
  */
-export async function inspectTLS(host: string): Promise<TLSInspectionResult> {
-  return new Promise((resolve) => {
-    const findings: TLSFinding[] = [];
+function inspectTlsCert(host: string): Promise<{
+  valid: boolean;
+  daysLeft: number;
+  protocol: string;
+  issuer: string;
+  subject: string;
+  validTo: string;
+}> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error('TLS_TIMEOUT'));
+    }, CONNECT_TIMEOUT_MS);
+
     const socket = tls.connect(
       {
         host,
         port: 443,
-        servername: host, // SNI support
-        timeout: 5000,
-        rejectUnauthorized: false, // We check authorization manually to report clear findings
+        servername: host,
+        // Permitimos auto-verificación; si falla → valid = false
+        rejectUnauthorized: false,
       },
       () => {
-        try {
-          const cert = socket.getPeerCertificate(true);
-          const protocol = socket.getProtocol();
-          const isAuthorized = socket.authorized;
-          const authError = socket.authorizationError;
+        clearTimeout(timer);
 
-          if (!cert || Object.keys(cert).length === 0) {
-            findings.push({
-              ruleKey: "SSL_CERT_PRESENT",
-              category: "TLS_SSL",
-              title: "Certificado SSL/TLS no entregado",
-              description: "El servidor no proporcionó un certificado X.509 válido en el puerto 443.",
-              status: "FAILED",
-              severity: "CRITICAL",
-              remediation: "Instale un certificado SSL/TLS válido para habilitar HTTPS en el dominio.",
-            });
+        const cert = socket.getPeerCertificate(true);
+        const protocol = socket.getProtocol() ?? 'unknown';
 
-            socket.destroy();
-            return resolve({
-              sslValid: false,
-              sslIssuer: null,
-              sslDaysLeft: null,
-              sslProtocol: protocol || null,
-              findings,
-            });
-          }
-
-          // 1. Issuer extraction
-          const issuer = cert.issuer ? (cert.issuer.O || cert.issuer.CN || "Desconocido") : "Desconocido";
-
-          // 2. Expiration calculation
-          const validToDate = new Date(cert.valid_to);
-          const now = Date.now();
-          const sslDaysLeft = Math.floor((validToDate.getTime() - now) / (1000 * 60 * 60 * 24));
-
-          // Finding 1: Certificate Authority & Validity
-          if (isAuthorized) {
-            findings.push({
-              ruleKey: "SSL_VALIDITY",
-              category: "TLS_SSL",
-              title: "Validez del Certificado SSL/TLS",
-              description: `Certificado válido emitido por una entidad de certificación de confianza (${issuer}).`,
-              status: "PASSED",
-              severity: "HIGH",
-              rawData: { issuer, validFrom: cert.valid_from, validTo: cert.valid_to },
-            });
-          } else {
-            findings.push({
-              ruleKey: "SSL_VALIDITY",
-              category: "TLS_SSL",
-              title: "Certificado SSL/TLS Inválido o Autofirmado",
-              description: `Fallo de validación de confianza: ${authError || "Cadena de certificación no confiable"}.`,
-              status: "FAILED",
-              severity: "CRITICAL",
-              remediation: "Renueve o reemplace el certificado con uno firmado por una Autoridad Certificadora reconocida (ej. Let's Encrypt).",
-              rawData: { authError, issuer },
-            });
-          }
-
-          // Finding 2: Expiration Window
-          if (sslDaysLeft > 15) {
-            findings.push({
-              ruleKey: "SSL_EXPIRATION",
-              category: "TLS_SSL",
-              title: "Vigencia del Certificado SSL",
-              description: `El certificado expira en ${sslDaysLeft} días (${validToDate.toLocaleDateString()}).`,
-              status: "PASSED",
-              severity: "MEDIUM",
-              rawData: { daysLeft: sslDaysLeft, validTo: cert.valid_to },
-            });
-          } else if (sslDaysLeft > 0) {
-            findings.push({
-              ruleKey: "SSL_EXPIRATION",
-              category: "TLS_SSL",
-              title: "Certificado SSL Próximo a Expirar",
-              description: `Alerta: El certificado expira en menos de 15 días (${sslDaysLeft} días restantes).`,
-              status: "FAILED",
-              severity: "HIGH",
-              remediation: "Inicie el proceso de renovación del certificado de forma inmediata antes de su expiración.",
-              rawData: { daysLeft: sslDaysLeft, validTo: cert.valid_to },
-            });
-          } else {
-            findings.push({
-              ruleKey: "SSL_EXPIRATION",
-              category: "TLS_SSL",
-              title: "Certificado SSL Expirado",
-              description: `El certificado expiró hace ${Math.abs(sslDaysLeft)} días (${validToDate.toLocaleDateString()}).`,
-              status: "FAILED",
-              severity: "CRITICAL",
-              remediation: "El certificado está vencido. Genere un nuevo certificado SSL/TLS de inmediato.",
-              rawData: { daysLeft: sslDaysLeft, validTo: cert.valid_to },
-            });
-          }
-
-          // Finding 3: TLS Protocol Version
-          const isModernTLS = protocol === "TLSv1.2" || protocol === "TLSv1.3";
-          if (isModernTLS) {
-            findings.push({
-              ruleKey: "TLS_PROTOCOL",
-              category: "TLS_SSL",
-              title: "Protocolo Criptográfico TLS",
-              description: `Uso de protocolo criptográfico seguro y moderno: ${protocol}.`,
-              status: "PASSED",
-              severity: "HIGH",
-              rawData: { protocol },
-            });
-          } else {
-            findings.push({
-              ruleKey: "TLS_PROTOCOL",
-              category: "TLS_SSL",
-              title: "Protocolo Criptográfico Anticuado",
-              description: `El servidor negoció ${protocol || "versión obsoleta"}. Versiones anteriores a TLS 1.2 son vulnerables (ej. POODLE, BEAST).`,
-              status: "FAILED",
-              severity: "HIGH",
-              remediation: "Deshabilite SSLv3, TLS 1.0 y TLS 1.1 en la configuración de su servidor web/proxy y active TLS 1.2 y TLS 1.3.",
-              rawData: { protocol },
-            });
-          }
-
+        if (!cert || Object.keys(cert).length === 0) {
           socket.destroy();
-          resolve({
-            sslValid: isAuthorized && sslDaysLeft > 0,
-            sslIssuer: issuer,
-            sslDaysLeft,
-            sslProtocol: protocol || null,
-            findings,
-          });
-        } catch (err: unknown) {
-          socket.destroy();
-          resolve({
-            sslValid: false,
-            sslIssuer: null,
-            sslDaysLeft: null,
-            sslProtocol: null,
-            findings: [
-              {
-                ruleKey: "TLS_ERROR",
-                category: "TLS_SSL",
-                title: "Fallo durante inspección TLS",
-                description: `Error al extraer detalles TLS: ${err instanceof Error ? err.message : String(err)}`,
-                status: "FAILED",
-                severity: "HIGH",
-              },
-            ],
-          });
+          reject(new Error('NO_CERT'));
+          return;
         }
-      }
+
+        // Validez: authorized indica si la cadena es de confianza (CA raíz válida)
+        const valid = socket.authorized === true;
+
+        // Fecha de expiración
+        const validToDate = new Date(cert.valid_to);
+        const now = new Date();
+        const daysLeft = Math.floor(
+          (validToDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
+        );
+
+        // Emisor
+        const issuer = cert.issuer
+          ? Object.entries(cert.issuer)
+              .map(([k, v]) => `${k}=${v}`)
+              .join(', ')
+          : 'Desconocido';
+
+        // Sujeto
+        const subject = cert.subject?.CN ?? host;
+
+        socket.destroy();
+        resolve({ valid, daysLeft, protocol, issuer, subject, validTo: cert.valid_to });
+      },
     );
 
-    socket.on("timeout", () => {
+    socket.on('error', (err) => {
+      clearTimeout(timer);
       socket.destroy();
-      resolve({
-        sslValid: false,
-        sslIssuer: null,
-        sslDaysLeft: null,
-        sslProtocol: null,
-        findings: [
-          {
-            ruleKey: "TLS_TIMEOUT",
-            category: "TLS_SSL",
-            title: "Timeout de conexión TLS",
-            description: "Tiempo de espera agotado al conectar al puerto 443 con TLS.",
-            status: "FAILED",
-            severity: "HIGH",
-            remediation: "Verifique que el firewall del servidor permita tráfico entrante al puerto TCP 443.",
-          },
-        ],
-      });
-    });
-
-    socket.on("error", (err) => {
-      socket.destroy();
-      resolve({
-        sslValid: false,
-        sslIssuer: null,
-        sslDaysLeft: null,
-        sslProtocol: null,
-        findings: [
-          {
-            ruleKey: "TLS_CONNECTION_ERROR",
-            category: "TLS_SSL",
-            title: "Puerto 443 no disponible o sin soporte SSL",
-            description: `No se pudo establecer el handshake TLS: ${err.message}`,
-            status: "FAILED",
-            severity: "HIGH",
-            remediation: "Asegúrese de que el servidor web escuche conexiones HTTPS en el puerto 443.",
-          },
-        ],
-      });
+      reject(err);
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Checks individuales
+// ---------------------------------------------------------------------------
+
+function buildCertValidFinding(valid: boolean, errorMsg?: string): TlsFinding {
+  if (!valid || errorMsg) {
+    return {
+      checkKey: 'TLS_CERT_VALID',
+      category: 'TLS_SSL',
+      title: 'Certificado TLS no válido o no confiable',
+      description: errorMsg
+        ? `No se pudo verificar el certificado: ${errorMsg}`
+        : 'El certificado no está firmado por una CA de confianza o está autofirmado.',
+      status: 'FAILED',
+      severity: 'CRITICAL',
+      remediation:
+        'Instala un certificado válido de una CA de confianza (ej: Let\'s Encrypt, DigiCert). Nunca uses certificados autofirmados en producción.',
+      evidence: { valid, error: errorMsg ?? null },
+    };
+  }
+  return {
+    checkKey: 'TLS_CERT_VALID',
+    category: 'TLS_SSL',
+    title: 'Certificado TLS válido y confiable',
+    description: 'El certificado está firmado por una CA de confianza y la cadena es válida.',
+    status: 'PASSED',
+    severity: 'INFO',
+    evidence: { valid },
+  };
+}
+
+function buildCertExpiryFinding(
+  daysLeft: number,
+  validTo: string,
+  issuer: string,
+): TlsFinding {
+  if (daysLeft <= 0) {
+    return {
+      checkKey: 'TLS_CERT_EXPIRY',
+      category: 'TLS_SSL',
+      title: 'Certificado TLS expirado',
+      description: `El certificado expiró hace ${Math.abs(daysLeft)} días (${validTo}).`,
+      status: 'FAILED',
+      severity: 'CRITICAL',
+      remediation: 'Renueva el certificado de inmediato.',
+      evidence: { daysLeft, validTo, issuer },
+    };
+  }
+  if (daysLeft <= 7) {
+    return {
+      checkKey: 'TLS_CERT_EXPIRY',
+      category: 'TLS_SSL',
+      title: 'Certificado TLS expira en ≤7 días (CRÍTICO)',
+      description: `El certificado expirará en ${daysLeft} día(s) (${validTo}). Riesgo inmediato de interrupción.`,
+      status: 'FAILED',
+      severity: 'HIGH',
+      remediation: 'Renueva el certificado de forma urgente antes de que expire.',
+      evidence: { daysLeft, validTo, issuer },
+    };
+  }
+  if (daysLeft <= 30) {
+    return {
+      checkKey: 'TLS_CERT_EXPIRY',
+      category: 'TLS_SSL',
+      title: 'Certificado TLS expira en ≤30 días',
+      description: `El certificado expirará en ${daysLeft} días (${validTo}).`,
+      status: 'FAILED',
+      severity: 'MEDIUM',
+      remediation: 'Programa la renovación del certificado en los próximos días.',
+      evidence: { daysLeft, validTo, issuer },
+    };
+  }
+  return {
+    checkKey: 'TLS_CERT_EXPIRY',
+    category: 'TLS_SSL',
+    title: 'Certificado TLS con vigencia suficiente',
+    description: `El certificado tiene ${daysLeft} días de vigencia restante (expira ${validTo}).`,
+    status: 'PASSED',
+    severity: 'INFO',
+    evidence: { daysLeft, validTo, issuer },
+  };
+}
+
+function buildProtocolFinding(protocol: string): TlsFinding {
+  if (!SAFE_PROTOCOLS.has(protocol)) {
+    return {
+      checkKey: 'TLS_PROTOCOL',
+      category: 'TLS_SSL',
+      title: 'Protocolo TLS obsoleto o inseguro',
+      description: `Se negoció el protocolo '${protocol}'. Solo TLS 1.2 y 1.3 son seguros.`,
+      status: 'FAILED',
+      severity: 'HIGH',
+      remediation:
+        'Desactiva TLS 1.0 y TLS 1.1 en la configuración del servidor web. Habilita únicamente TLS 1.2 y 1.3.',
+      evidence: { protocol },
+    };
+  }
+  return {
+    checkKey: 'TLS_PROTOCOL',
+    category: 'TLS_SSL',
+    title: `Protocolo TLS seguro (${protocol})`,
+    description: `Se usa ${protocol}, que es un protocolo TLS seguro y moderno.`,
+    status: 'PASSED',
+    severity: 'INFO',
+    evidence: { protocol },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Función principal exportada
+// ---------------------------------------------------------------------------
+
+/**
+ * Inspecciona TLS del host en el puerto 443.
+ * Devuelve exactamente 3 findings (TLS_CERT_VALID, TLS_CERT_EXPIRY, TLS_PROTOCOL)
+ * más los metadatos del certificado para guardar en el modelo Scan.
+ *
+ * @param host  Nombre de host sin esquema (ej: "example.com")
+ */
+export async function inspectTls(host: string): Promise<TlsInspectionResult> {
+  try {
+    const { valid, daysLeft, protocol, issuer, validTo } = await inspectTlsCert(host);
+
+    return {
+      sslValid: valid,
+      sslDaysLeft: daysLeft,
+      sslProtocol: protocol,
+      sslIssuer: issuer,
+      findings: [
+        buildCertValidFinding(valid),
+        buildCertExpiryFinding(daysLeft, validTo, issuer),
+        buildProtocolFinding(protocol),
+      ],
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Error desconocido';
+    // No exponemos el error interno (BK-06); sólo indicamos que falló
+    const genericError =
+      message === 'TLS_TIMEOUT'
+        ? 'Tiempo de conexión TLS agotado (>5 s).'
+        : 'No se pudo establecer una conexión TLS con el servidor.';
+
+    return {
+      sslValid: false,
+      sslDaysLeft: null,
+      sslProtocol: null,
+      sslIssuer: null,
+      findings: [
+        buildCertValidFinding(false, genericError),
+        {
+          checkKey: 'TLS_CERT_EXPIRY',
+          category: 'TLS_SSL',
+          title: 'No se pudo verificar expiración del certificado',
+          description: genericError,
+          status: 'FAILED',
+          severity: 'CRITICAL',
+          remediation: 'Verifica que el servidor sea accesible en el puerto 443.',
+          evidence: { error: genericError },
+        },
+        {
+          checkKey: 'TLS_PROTOCOL',
+          category: 'TLS_SSL',
+          title: 'No se pudo verificar protocolo TLS',
+          description: genericError,
+          status: 'FAILED',
+          severity: 'HIGH',
+          remediation: 'Verifica que el servidor sea accesible en el puerto 443.',
+          evidence: { error: genericError },
+        },
+      ],
+    };
+  }
 }
