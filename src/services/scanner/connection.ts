@@ -1,126 +1,212 @@
+/**
+ * @module connection
+ * @description Auditoría de conexión: 2 comprobaciones (CR-18, CR-19).
+ *   CR-18 — Redirección HTTP → HTTPS
+ *   CR-19 — Disponibilidad: sin respuestas 5xx y tiempo ≤ 3 s
+ *
+ * Seguridad aplicada:
+ * - BK-01: La URL ya fue validada por ssrfGuard() en el orquestador
+ * - BK-02: Timeout estricto de 5 s por petición
+ * - BK-06: Errores internos no se exponen en el mensaje del Finding
+ */
+
+import { FindingStatus, FindingSeverity } from '@prisma/client';
+
 export interface ConnectionFinding {
-  ruleKey: string;
-  category: "CONNECTION";
+  checkKey: string;
+  category: 'CONNECTION';
   title: string;
   description: string;
-  status: "PASSED" | "FAILED";
-  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+  status: FindingStatus;
+  severity: FindingSeverity;
   remediation?: string;
-  rawData?: Record<string, unknown>;
+  evidence?: Record<string, unknown>;
 }
 
-export interface ConnectionAuditResult {
-  responseTimeMs: number;
-  httpsRedirect: boolean;
+export interface ConnectionResult {
   findings: ConnectionFinding[];
+  /** true si el servidor redirige HTTP → HTTPS */
+  httpsRedirect: boolean;
+  /** Tiempo de respuesta en ms (null si no se pudo medir) */
+  responseTimeMs: number | null;
+  /** IP del servidor obtenida del DNS (guardada en scan) */
+  ipAddress: string | null;
 }
+
+const REQUEST_TIMEOUT_MS = 5_000;
+/** Umbral máximo de tiempo de respuesta aceptable */
+const MAX_RESPONSE_TIME_MS = 3_000;
 
 /**
- * Checks server latency, availability, and automatic HTTP-to-HTTPS redirect (BK-02)
+ * Realiza una petición GET con timeout.
+ * Devuelve { status, url, responseTimeMs } tras seguir redirecciones.
  */
-export async function auditConnection(host: string, targetUrl: string): Promise<ConnectionAuditResult> {
-  const findings: ConnectionFinding[] = [];
-
-  // 1. Measure response time against target URL
-  const startTime = performance.now();
-  let responseTimeMs = 0;
-
+async function timedFetch(
+  url: string,
+  options: RequestInit = {},
+): Promise<{ status: number; finalUrl: string; responseTimeMs: number }> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 5000);
-
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const start = Date.now();
   try {
-    await fetch(targetUrl, {
-      method: "HEAD",
-      signal: controller.signal,
-      headers: { "User-Agent": "ScanDev-Audit/1.0" },
-    });
-    responseTimeMs = Math.round(performance.now() - startTime);
-  } catch {
-    responseTimeMs = Math.round(performance.now() - startTime);
+    const res = await fetch(url, { ...options, signal: controller.signal, redirect: 'follow' });
+    const responseTimeMs = Date.now() - start;
+    return { status: res.status, finalUrl: res.url, responseTimeMs };
   } finally {
-    clearTimeout(timeoutId);
+    clearTimeout(timer);
   }
+}
 
-  // Evaluate latency finding
-  if (responseTimeMs < 1500) {
-    findings.push({
-      ruleKey: "RESPONSE_TIME",
-      category: "CONNECTION",
-      title: "Tiempo de Respuesta del Servidor",
-      description: `Excelente tiempo de respuesta: ${responseTimeMs} ms.`,
-      status: "PASSED",
-      severity: "LOW",
-      rawData: { responseTimeMs },
-    });
-  } else {
-    findings.push({
-      ruleKey: "RESPONSE_TIME",
-      category: "CONNECTION",
-      title: "Tiempo de Respuesta Elevado",
-      description: `El servidor tardó ${responseTimeMs} ms en responder a la solicitud inicial.`,
-      status: "FAILED",
-      severity: "LOW",
-      remediation: "Optimice el rendimiento del servidor, balanceo de carga o CDN para reducir la latencia.",
-      rawData: { responseTimeMs },
-    });
-  }
+// ---------------------------------------------------------------------------
+// CR-18: Redirección HTTP → HTTPS
+// ---------------------------------------------------------------------------
 
-  // 2. Check HTTP -> HTTPS redirect
-  let httpsRedirect = false;
-  const httpController = new AbortController();
-  const httpTimeoutId = setTimeout(() => httpController.abort(), 5000);
+async function checkHttpsRedirect(targetUrl: string): Promise<ConnectionFinding & { redirected: boolean }> {
+  const checkKey = 'HTTPS_REDIRECT';
+  let redirected = false;
 
   try {
-    const httpRes = await fetch(`http://${host}`, {
-      method: "GET",
-      redirect: "manual", // Do not follow redirects automatically
-      signal: httpController.signal,
-      headers: { "User-Agent": "ScanDev-Audit/1.0" },
-    });
+    const urlObj = new URL(targetUrl);
+    // Siempre probamos la versión HTTP del mismo host
+    const httpUrl = `http://${urlObj.host}${urlObj.pathname}${urlObj.search}`;
 
-    const isRedirectCode = [301, 302, 307, 308].includes(httpRes.status);
-    const location = httpRes.headers.get("location") || "";
+    const { finalUrl } = await timedFetch(httpUrl, { redirect: 'follow' });
+    redirected = finalUrl.startsWith('https://');
 
-    if (isRedirectCode && location.startsWith("https://")) {
-      httpsRedirect = true;
-      findings.push({
-        ruleKey: "HTTPS_REDIRECT",
-        category: "CONNECTION",
-        title: "Redirección Automática HTTPS",
-        description: `El tráfico HTTP no seguro redirige automáticamente a HTTPS (${httpRes.status} -> ${location}).`,
-        status: "PASSED",
-        severity: "HIGH",
-        rawData: { statusCode: httpRes.status, redirectLocation: location },
-      });
-    } else {
-      findings.push({
-        ruleKey: "HTTPS_REDIRECT",
-        category: "CONNECTION",
-        title: "Falta Redirección Automática a HTTPS",
-        description: "El sitio web permite conexiones HTTP en texto claro sin forzar la redirección a HTTPS.",
-        status: "FAILED",
-        severity: "HIGH",
-        remediation: "Configure una regla de redirección 301 permanente en el servidor web (Nginx/Apache/Caddy) de HTTP a HTTPS.",
-        rawData: { statusCode: httpRes.status, location },
-      });
+    if (!redirected) {
+      return {
+        checkKey,
+        category: 'CONNECTION',
+        title: 'Sin redirección HTTP → HTTPS',
+        description: `La URL HTTP '${httpUrl}' no redirigió a HTTPS. URL final: '${finalUrl}'`,
+        status: 'FAILED',
+        severity: 'HIGH',
+        remediation:
+          'Configura una redirección 301 permanente de HTTP a HTTPS en el servidor web o balanceador de carga.',
+        evidence: { httpUrl, finalUrl, redirected: false },
+        redirected: false,
+      };
     }
-  } catch (err) {
-    findings.push({
-      ruleKey: "HTTPS_REDIRECT",
-      category: "CONNECTION",
-      title: "Comprobación de Redirección HTTP Fallida",
-      description: "No fue posible conectar por el puerto HTTP (80) para verificar redirección.",
-      status: "FAILED",
-      severity: "MEDIUM",
-      rawData: { error: err instanceof Error ? err.message : String(err) },
-    });
-  } finally {
-    clearTimeout(httpTimeoutId);
+
+    return {
+      checkKey,
+      category: 'CONNECTION',
+      title: 'Redirección HTTP → HTTPS activa',
+      description: `La petición HTTP fue redirigida correctamente a HTTPS.`,
+      status: 'PASSED',
+      severity: 'INFO',
+      evidence: { httpUrl, finalUrl, redirected: true },
+      redirected: true,
+    };
+  } catch {
+    // Error de red o timeout — tratamos como fallo (no hay redirección verificada)
+    return {
+      checkKey,
+      category: 'CONNECTION',
+      title: 'No se pudo verificar la redirección HTTP → HTTPS',
+      description: 'No se recibió respuesta desde la URL HTTP en el tiempo límite.',
+      status: 'FAILED',
+      severity: 'MEDIUM',
+      remediation: 'Verifica que el servidor responda en el puerto 80 y redirija a HTTPS.',
+      evidence: { redirected: false, error: 'Timeout o sin respuesta' },
+      redirected: false,
+    };
   }
+}
+
+// ---------------------------------------------------------------------------
+// CR-19: Disponibilidad
+// ---------------------------------------------------------------------------
+
+async function checkAvailability(targetUrl: string): Promise<ConnectionFinding & { responseTimeMs: number | null }> {
+  const checkKey = 'AVAILABILITY';
+
+  try {
+    const { status, responseTimeMs } = await timedFetch(targetUrl);
+
+    if (status >= 500 && status < 600) {
+      return {
+        checkKey,
+        category: 'CONNECTION',
+        title: 'El servidor respondió con error 5xx',
+        description: `El servidor devolvió HTTP ${status}, lo que indica un error interno del servidor.`,
+        status: 'FAILED',
+        severity: 'HIGH',
+        remediation:
+          'Revisa los logs del servidor web y la aplicación para identificar la causa del error 5xx.',
+        evidence: { httpStatus: status, responseTimeMs },
+        responseTimeMs,
+      };
+    }
+
+    if (responseTimeMs > MAX_RESPONSE_TIME_MS) {
+      return {
+        checkKey,
+        category: 'CONNECTION',
+        title: 'Tiempo de respuesta superior a 3 s',
+        description: `El servidor tardó ${responseTimeMs} ms en responder, superando el límite de ${MAX_RESPONSE_TIME_MS} ms.`,
+        status: 'FAILED',
+        severity: 'MEDIUM',
+        remediation:
+          'Optimiza el rendimiento del servidor: revisa caché, CDN, consultas de base de datos y recursos del servidor.',
+        evidence: { httpStatus: status, responseTimeMs, limitMs: MAX_RESPONSE_TIME_MS },
+        responseTimeMs,
+      };
+    }
+
+    return {
+      checkKey,
+      category: 'CONNECTION',
+      title: 'Servidor disponible y responde rápidamente',
+      description: `El servidor respondió con HTTP ${status} en ${responseTimeMs} ms (límite: ${MAX_RESPONSE_TIME_MS} ms).`,
+      status: 'PASSED',
+      severity: 'INFO',
+      evidence: { httpStatus: status, responseTimeMs, limitMs: MAX_RESPONSE_TIME_MS },
+      responseTimeMs,
+    };
+  } catch {
+    return {
+      checkKey,
+      category: 'CONNECTION',
+      title: 'Servidor no disponible o sin respuesta',
+      description: 'No se recibió respuesta del servidor dentro del tiempo límite de 5 s.',
+      status: 'FAILED',
+      severity: 'HIGH',
+      remediation: 'Verifica que el servidor esté en línea y responda en el puerto 443.',
+      evidence: { error: 'Timeout o conexión rechazada', limitMs: MAX_RESPONSE_TIME_MS },
+      responseTimeMs: null,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Función principal exportada
+// ---------------------------------------------------------------------------
+
+/**
+ * Audita disponibilidad y redirección HTTPS del objetivo.
+ * Devuelve exactamente 2 findings (HTTPS_REDIRECT, AVAILABILITY).
+ *
+ * @param targetUrl  URL completa validada por ssrfGuard
+ * @param ipAddress  IP resuelta (opcional, se guarda en evidencia)
+ */
+export async function auditConnection(
+  targetUrl: string,
+  ipAddress?: string | null,
+): Promise<ConnectionResult> {
+  const [redirectResult, availabilityResult] = await Promise.all([
+    checkHttpsRedirect(targetUrl),
+    checkAvailability(targetUrl),
+  ]);
+
+  // Extraemos los campos extra antes de construir los findings limpios
+  const { redirected, ...redirectFinding } = redirectResult;
+  const { responseTimeMs, ...availabilityFinding } = availabilityResult;
 
   return {
-    responseTimeMs,
-    httpsRedirect,
-    findings,
+    httpsRedirect: redirected,
+    responseTimeMs: responseTimeMs,
+    ipAddress: ipAddress ?? null,
+    findings: [redirectFinding, availabilityFinding],
   };
 }
