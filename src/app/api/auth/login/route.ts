@@ -3,6 +3,7 @@ import { LoginSchema } from "@/lib/validators";
 import { AuthService } from "@/services/auth.service";
 import { getSessionCookieOptions } from "@/lib/auth";
 import { getRateLimitStatus, recordRateLimitHit } from "@/lib/rate-limit";
+import { getClientIp } from "@/lib/client-ip";
 
 const LOGIN_ATTEMPT_LIMIT = 5;
 const LOGIN_WINDOW_MS = 15 * 60_000;
@@ -14,7 +15,10 @@ function recordFailedLogin(email: string | null, ipAddress: string): void {
 }
 
 export async function POST(req: NextRequest) {
-  const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "127.0.0.1";
+  const ipAddress = getClientIp(req);
+  if (!ipAddress) {
+    return NextResponse.json({ error: "No se pudo determinar la IP del cliente" }, { status: 503 });
+  }
   const userAgent = req.headers.get("user-agent") || "Unknown";
   let loginEmail: string | null = null;
 

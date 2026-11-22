@@ -10,6 +10,7 @@ const EnvironmentSchema = z.object({
     }),
   JWT_SECRET: z.string().min(32, "Debe contener al menos 32 caracteres"),
   STORAGE_REPORTS_DIR: z.string().min(1).default("./storage/reports"),
+  TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
 });
 
 export type Environment = z.infer<typeof EnvironmentSchema>;

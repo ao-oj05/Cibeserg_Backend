@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser, AUTH_COOKIE_NAME } from "@/lib/auth";
 import { AuthService } from "@/services/auth.service";
+import { getClientIp } from "@/lib/client-ip";
 
 export async function POST(req: NextRequest) {
-  const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "127.0.0.1";
+  const ipAddress = getClientIp(req) || "unknown";
   const userAgent = req.headers.get("user-agent") || "Unknown";
 
   const session = await getSessionUser(req);

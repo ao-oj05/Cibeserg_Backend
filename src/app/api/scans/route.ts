@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser } from '@/lib/auth';
 import { CreateScanSchema, ScanQuerySchema } from '@/lib/validators';
+import { getClientIp } from '@/lib/client-ip';
 import { ScanService } from '@/services/scan.service';
 
 export const runtime = 'nodejs';
@@ -63,8 +64,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
     }
 
-    const ipAddress =
-      req.headers.get('x-forwarded-for')?.split(',')[0].trim() ?? '127.0.0.1';
+    const ipAddress = getClientIp(req);
+    if (!ipAddress) {
+      return NextResponse.json(
+        { error: 'No se pudo determinar la IP del cliente' },
+        { status: 503 },
+      );
+    }
 
     const body = await req.json();
 
