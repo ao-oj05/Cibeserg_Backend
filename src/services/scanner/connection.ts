@@ -11,6 +11,7 @@
  */
 
 import { FindingStatus, FindingSeverity } from '@prisma/client';
+import { safeHttpRequest } from './safe-http';
 
 export interface ConnectionFinding {
   checkKey: string;
@@ -33,35 +34,35 @@ export interface ConnectionResult {
   ipAddress: string | null;
 }
 
-const REQUEST_TIMEOUT_MS = 5_000;
 /** Umbral máximo de tiempo de respuesta aceptable */
 const MAX_RESPONSE_TIME_MS = 3_000;
 
 /**
- * Realiza una petición GET con timeout.
+ * Realiza una petición GET validando SSRF, tamaño de respuesta y redirecciones.
  * Devuelve { status, url, responseTimeMs } tras seguir redirecciones.
  */
 async function timedFetch(
   url: string,
-  options: RequestInit = {},
+  options: { method?: string; headers?: HeadersInit } = {},
+  signal?: AbortSignal,
 ): Promise<{ status: number; finalUrl: string; responseTimeMs: number }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const start = Date.now();
-  try {
-    const res = await fetch(url, { ...options, signal: controller.signal, redirect: 'follow' });
-    const responseTimeMs = Date.now() - start;
-    return { status: res.status, finalUrl: res.url, responseTimeMs };
-  } finally {
-    clearTimeout(timer);
-  }
+  const response = await safeHttpRequest(url, { ...options, signal });
+  return {
+    status: response.status,
+    finalUrl: response.url,
+    responseTimeMs: Date.now() - start,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // CR-18: Redirección HTTP → HTTPS
 // ---------------------------------------------------------------------------
 
-async function checkHttpsRedirect(targetUrl: string): Promise<ConnectionFinding & { redirected: boolean }> {
+async function checkHttpsRedirect(
+  targetUrl: string,
+  signal?: AbortSignal,
+): Promise<ConnectionFinding & { redirected: boolean }> {
   const checkKey = 'HTTPS_REDIRECT';
   let redirected = false;
 
@@ -70,7 +71,7 @@ async function checkHttpsRedirect(targetUrl: string): Promise<ConnectionFinding 
     // Siempre probamos la versión HTTP del mismo host
     const httpUrl = `http://${urlObj.host}${urlObj.pathname}${urlObj.search}`;
 
-    const { finalUrl } = await timedFetch(httpUrl, { redirect: 'follow' });
+    const { finalUrl } = await timedFetch(httpUrl, {}, signal);
     redirected = finalUrl.startsWith('https://');
 
     if (!redirected) {
@@ -118,11 +119,14 @@ async function checkHttpsRedirect(targetUrl: string): Promise<ConnectionFinding 
 // CR-19: Disponibilidad
 // ---------------------------------------------------------------------------
 
-async function checkAvailability(targetUrl: string): Promise<ConnectionFinding & { responseTimeMs: number | null }> {
+async function checkAvailability(
+  targetUrl: string,
+  signal?: AbortSignal,
+): Promise<ConnectionFinding & { responseTimeMs: number | null }> {
   const checkKey = 'AVAILABILITY';
 
   try {
-    const { status, responseTimeMs } = await timedFetch(targetUrl);
+    const { status, responseTimeMs } = await timedFetch(targetUrl, {}, signal);
 
     if (status >= 500 && status < 600) {
       return {
@@ -193,10 +197,11 @@ async function checkAvailability(targetUrl: string): Promise<ConnectionFinding &
 export async function auditConnection(
   targetUrl: string,
   ipAddress?: string | null,
+  signal?: AbortSignal,
 ): Promise<ConnectionResult> {
   const [redirectResult, availabilityResult] = await Promise.all([
-    checkHttpsRedirect(targetUrl),
-    checkAvailability(targetUrl),
+    checkHttpsRedirect(targetUrl, signal),
+    checkAvailability(targetUrl, signal),
   ]);
 
   // Extraemos los campos extra antes de construir los findings limpios

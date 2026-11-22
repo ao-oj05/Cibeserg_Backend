@@ -3,6 +3,8 @@ import { getSessionUser } from '@/lib/auth';
 import { CreateScanSchema, ScanQuerySchema } from '@/lib/validators';
 import { ScanService } from '@/services/scan.service';
 
+export const runtime = 'nodejs';
+
 /**
  * GET /api/scans
  * Lista el historial de escaneos del usuario autenticado (BK-05).
@@ -41,7 +43,7 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST /api/scans
- * Inicia un nuevo escaneo de seguridad pasivo.
+ * Encola un nuevo escaneo de seguridad pasivo.
  *
  * Body esperado:
  * {
@@ -98,8 +100,8 @@ export async function POST(req: NextRequest) {
     );
 
     return NextResponse.json(
-      { message: 'Escaneo completado satisfactoriamente', data: scan },
-      { status: 201 },
+      { message: 'Escaneo aceptado y en cola', data: scan },
+      { status: 202 },
     );
   } catch (err: unknown) {
     const message =
@@ -109,6 +111,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: message.replace('RATE_LIMIT:', '') },
         { status: 429 },
+      );
+    }
+    if (message.startsWith('QUEUE_FULL:')) {
+      return NextResponse.json(
+        { error: message.replace('QUEUE_FULL:', '') },
+        { status: 503 },
       );
     }
     if (message.startsWith('RS-02:')) {

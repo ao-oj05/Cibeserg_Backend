@@ -9,6 +9,7 @@
  */
 
 import { FindingStatus, FindingSeverity } from '@prisma/client';
+import { safeHttpRequest } from './safe-http';
 
 export interface HeaderFinding {
   checkKey: string;
@@ -31,24 +32,6 @@ interface CorsProbe {
   acam: string | null;        // Access-Control-Allow-Methods (OPTIONS)
   reflected: boolean;
   credentialsExposed: boolean;
-}
-
-const TIMEOUT_MS = 5_000;
-
-/**
- * Realiza un fetch con timeout. Lanza error si se excede el tiempo.
- */
-async function fetchWithTimeout(
-  url: string,
-  options: RequestInit = {},
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /**
@@ -301,7 +284,7 @@ function checkXPermittedCrossDomainPolicies(value: string | null): HeaderFinding
  * S3: Origin `null`
  * S4: Preflight OPTIONS con Origin falso
  */
-async function checkCORS(targetUrl: string): Promise<HeaderFinding> {
+async function checkCORS(targetUrl: string, signal?: AbortSignal): Promise<HeaderFinding> {
   const checkKey = 'CORS';
   const probes: CorsProbe[] = [];
   let failed = false;
@@ -322,9 +305,7 @@ async function checkCORS(targetUrl: string): Promise<HeaderFinding> {
     const headers: HeadersInit = {
       'Accept': 'text/html,application/xhtml+xml,*/*',
     };
-    if (cfg.origin) {
-      (headers as Record<string, string>)['Origin'] = cfg.origin;
-    }
+    (headers as Record<string, string>)['Origin'] = cfg.origin ?? 'null';
     if (cfg.method === 'OPTIONS') {
       (headers as Record<string, string>)['Access-Control-Request-Method'] = 'GET';
       (headers as Record<string, string>)['Access-Control-Request-Headers'] = 'x-custom-header';
@@ -335,10 +316,10 @@ async function checkCORS(targetUrl: string): Promise<HeaderFinding> {
     let acam: string | null = null;
 
     try {
-      const res = await fetchWithTimeout(targetUrl, {
+      const res = await safeHttpRequest(targetUrl, {
         method: cfg.method,
         headers,
-        redirect: 'follow',
+        signal,
       });
       acao = res.headers.get('access-control-allow-origin');
       acac = res.headers.get('access-control-allow-credentials');
@@ -640,6 +621,7 @@ function checkServerDisclosure(
 export async function auditHttpHeaders(
   targetUrl: string,
   headers: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<HeaderFinding[]> {
   const h = (name: string): string | null =>
     headers[name.toLowerCase()] ?? null;
@@ -660,7 +642,7 @@ export async function auditHttpHeaders(
     // CR-07
     checkXPermittedCrossDomainPolicies(h('x-permitted-cross-domain-policies')),
     // CR-08 CORS — 4 sondas activas (async)
-    await checkCORS(targetUrl),
+    await checkCORS(targetUrl, signal),
     // CR-09
     checkCacheControl(h('cache-control')),
     // CR-10

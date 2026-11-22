@@ -27,15 +27,15 @@
  *   0–59   → CRITICAL
  */
 
-import { Prisma, PrismaClient, FindingStatus, FindingSeverity, RiskLevel, ScanStatus } from '@prisma/client';
+import { Prisma, FindingStatus, FindingSeverity, RiskLevel } from '@prisma/client';
+import { prisma } from '@/lib/db';
 import { validateTargetAgainstSSRF } from './ssrf-guard';
+import { safeHttpRequest } from './safe-http';
 import { auditHttpHeaders, headersToObject } from './http-headers';
 import { inspectTls } from './tls-inspector';
 import { auditConnection } from './connection';
 import { notificationService } from '../notification.service';
 import { auditService } from '../audit.service';
-
-const prisma = new PrismaClient();
 
 // ---------------------------------------------------------------------------
 // Deducción de puntos por severidad
@@ -72,17 +72,23 @@ function computeRiskLevel(score: number): RiskLevel {
 const BLOCKED_HEADERS = new Set(['set-cookie', 'authorization', 'cookie', 'proxy-authorization']);
 const MAX_HEADERS = 50;
 const MAX_VALUE_LENGTH = 500;
+const MAX_SCAN_DURATION_MS = 30_000;
 
 function sanitizeRawHeaders(headers: Record<string, string>): Record<string, string> {
   const sanitized: Record<string, string> = {};
   let count = 0;
+  let bytes = 0;
   for (const [key, value] of Object.entries(headers)) {
     if (count >= MAX_HEADERS) break;
     const lower = key.toLowerCase();
     if (BLOCKED_HEADERS.has(lower)) continue;
-    sanitized[lower] = value.length > MAX_VALUE_LENGTH
+    const boundedValue = value.length > MAX_VALUE_LENGTH
       ? value.substring(0, MAX_VALUE_LENGTH) + '…'
       : value;
+    const entryBytes = Buffer.byteLength(`${lower}:${boundedValue}\r\n`);
+    if (bytes + entryBytes > 4_096) break;
+    sanitized[lower] = boundedValue;
+    bytes += entryBytes;
     count++;
   }
   return sanitized;
@@ -99,65 +105,50 @@ export interface RunScanOptions {
   confirmedOwnership: boolean;
 }
 
-export async function runScan({ scanId, userId, targetUrl, confirmedOwnership }: RunScanOptions): Promise<void> {
-  // RS-02: Validación de propiedad confirmada
-  if (!confirmedOwnership) {
-    await prisma.scan.update({
-      where: { id: scanId },
-      data: { status: 'FAILED' },
-    });
-    throw new Error('El usuario no confirmó la autorización de escaneo (RS-02).');
-  }
-
-  // BK-01: Guardia SSRF — valida el host antes de cualquier petición
-  let resolvedIp: string | null = null;
-  try {
-    const guardResult = await validateTargetAgainstSSRF(targetUrl);
-    resolvedIp = guardResult.ipAddress;
-  } catch (err) {
-    await prisma.scan.update({
-      where: { id: scanId },
-      data: { status: 'FAILED' },
-    });
-    throw new Error('El objetivo no pasó la validación de seguridad SSRF.');
-  }
-
-  // Marcar como RUNNING
-  await prisma.scan.update({
-    where: { id: scanId },
-    data: { status: 'RUNNING', ipAddress: resolvedIp },
-  });
+export async function runScan({
+  scanId,
+  userId,
+  targetUrl,
+  confirmedOwnership,
+}: RunScanOptions): Promise<void> {
+  const controller = new AbortController();
+  const scanTimeout = setTimeout(
+    () => controller.abort(new Error('SCAN_TIMEOUT')),
+    MAX_SCAN_DURATION_MS,
+  );
+  const signal = controller.signal;
 
   try {
-    const urlObj = new URL(targetUrl);
-    const host = urlObj.hostname;
-
-    // -----------------------------------------------------------------------
-    // 1. Petición base para obtener cabeceras HTTP
-    // -----------------------------------------------------------------------
-    let rawHeadersMap: Record<string, string> = {};
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5_000);
-      const baseRes = await fetch(targetUrl, {
-        method: 'GET',
-        redirect: 'follow',
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      rawHeadersMap = headersToObject(baseRes.headers);
-    } catch {
-      // Sin cabeceras base — los checks individuales fallarán apropiadamente
+    if (!confirmedOwnership) {
+      throw new Error('El usuario no confirmó la autorización de escaneo (RS-02).');
     }
 
-    // -----------------------------------------------------------------------
-    // 2. Ejecutar los 3 módulos de auditoría en paralelo
-    // -----------------------------------------------------------------------
+    const guardResult = await validateTargetAgainstSSRF(targetUrl, signal);
+
+    await prisma.scan.update({
+      where: { id: scanId, userId },
+      data: { status: 'RUNNING', ipAddress: guardResult.ipAddress },
+    });
+
+    const urlObj = new URL(targetUrl);
+    const host = urlObj.hostname.replace(/^\[|\]$/g, '');
+
+    let rawHeadersMap: Record<string, string> = {};
+    try {
+      const baseResponse = await safeHttpRequest(targetUrl, { signal });
+      rawHeadersMap = headersToObject(baseResponse.headers);
+    } catch {
+      if (signal.aborted) throw signal.reason;
+    }
+
+    if (signal.aborted) throw signal.reason;
+
     const [headerFindings, tlsResult, connectionResult] = await Promise.all([
-      auditHttpHeaders(targetUrl, rawHeadersMap),     // 14 findings
-      inspectTls(host),                               //  3 findings
-      auditConnection(targetUrl, resolvedIp),         //  2 findings
+      auditHttpHeaders(targetUrl, rawHeadersMap, signal),
+      inspectTls(host, guardResult.ipAddress, signal),
+      auditConnection(targetUrl, guardResult.ipAddress, signal),
     ]);
+    if (signal.aborted) throw signal.reason;
 
     // Total: 19 findings
     const allFindings = [
@@ -211,7 +202,7 @@ export async function runScan({ scanId, userId, targetUrl, confirmedOwnership }:
     const sanitizedHeaders = sanitizeRawHeaders(rawHeadersMap);
 
     await prisma.scan.update({
-      where: { id: scanId },
+      where: { id: scanId, userId },
       data: {
         status: 'COMPLETED',
         completedAt: new Date(),
@@ -232,16 +223,16 @@ export async function runScan({ scanId, userId, targetUrl, confirmedOwnership }:
     // -----------------------------------------------------------------------
     // 6. Notificaciones automáticas
     // -----------------------------------------------------------------------
-    const scanOwner = await prisma.scan.findUnique({
-      where: { id: scanId },
-      select: { userId: true },
+    const scanOwner = await prisma.scan.findFirst({
+      where: { id: scanId, userId },
+      select: { id: true },
     });
-    const ownerId = scanOwner?.userId ?? userId;
+    if (!scanOwner) throw new Error('Escaneo no encontrado o sin autorización.');
 
     // 6a. Certificado próximo a expirar
     if (tlsResult.sslDaysLeft !== null && tlsResult.sslDaysLeft <= 30) {
       await notificationService.create({
-        userId: ownerId,
+        userId,
         type: 'CERTIFICATE_EXPIRING',
         title: '⚠️ Certificado TLS próximo a vencer',
         message: `El certificado de ${host} vence en ${tlsResult.sslDaysLeft} días.`,
@@ -251,7 +242,7 @@ export async function runScan({ scanId, userId, targetUrl, confirmedOwnership }:
     // 6b. Riesgo crítico
     if (riskLevel === 'CRITICAL') {
       await notificationService.create({
-        userId: ownerId,
+        userId,
         type: 'HIGH_RISK_ALERT',
         title: '🚨 Riesgo crítico detectado',
         message: `El escaneo de ${host} obtuvo puntuación ${riskScore}/100 (CRÍTICO).`,
@@ -260,7 +251,7 @@ export async function runScan({ scanId, userId, targetUrl, confirmedOwnership }:
 
     // 6c. Escaneo completado
     await notificationService.create({
-      userId: ownerId,
+      userId,
       type: 'SCAN_COMPLETED',
       title: '✅ Escaneo completado',
       message: `El escaneo de ${host} finalizó. Puntuación: ${riskScore}/100 (${riskLevel}).`,
@@ -268,18 +259,22 @@ export async function runScan({ scanId, userId, targetUrl, confirmedOwnership }:
 
     // 6d. Evento de auditoría
     await auditService.log({
-      userId: ownerId,
+      userId,
       action: 'SCAN_COMPLETED',
       metadata: { scanId, host, riskScore, riskLevel, findingsCount: allFindings.length },
     });
 
   } catch (err) {
-    // Marcar como fallido sin exponer el error interno (BK-06)
-    await prisma.scan.update({
-      where: { id: scanId },
-      data: { status: 'FAILED', completedAt: new Date() },
-    }).catch(() => {/* ignora error secundario */});
-
+    try {
+      await prisma.scan.updateMany({
+        where: { id: scanId, userId, status: { in: ['PENDING', 'RUNNING'] } },
+        data: { status: 'FAILED', completedAt: new Date() },
+      });
+    } catch (updateError) {
+      console.error(`[Scanner:${scanId}] Could not mark scan as failed`, updateError);
+    }
     throw err;
+  } finally {
+    clearTimeout(scanTimeout);
   }
 }

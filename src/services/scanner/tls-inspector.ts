@@ -44,7 +44,7 @@ const SAFE_PROTOCOLS = new Set(['TLSv1.2', 'TLSv1.3']);
  * Conecta al host:443 con TLS y obtiene información del certificado.
  * Lanza error si el tiempo de conexión supera CONNECT_TIMEOUT_MS.
  */
-function inspectTlsCert(host: string): Promise<{
+function inspectTlsCert(host: string, ipAddress: string, signal?: AbortSignal): Promise<{
   valid: boolean;
   daysLeft: number;
   protocol: string;
@@ -53,6 +53,13 @@ function inspectTlsCert(host: string): Promise<{
   validTo: string;
 }> {
   return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    };
+    const abort = () => {
+      socket.destroy(new Error('TLS_ABORTED'));
+    };
     const timer = setTimeout(() => {
       socket.destroy();
       reject(new Error('TLS_TIMEOUT'));
@@ -60,14 +67,14 @@ function inspectTlsCert(host: string): Promise<{
 
     const socket = tls.connect(
       {
-        host,
+        host: ipAddress,
         port: 443,
-        servername: host,
+        servername: net.isIP(host) ? undefined : host,
         // Permitimos auto-verificación; si falla → valid = false
         rejectUnauthorized: false,
       },
       () => {
-        clearTimeout(timer);
+        cleanup();
 
         const cert = socket.getPeerCertificate(true);
         const protocol = socket.getProtocol() ?? 'unknown';
@@ -104,8 +111,11 @@ function inspectTlsCert(host: string): Promise<{
       },
     );
 
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+
     socket.on('error', (err) => {
-      clearTimeout(timer);
+      cleanup();
       socket.destroy();
       reject(err);
     });
@@ -231,9 +241,17 @@ function buildProtocolFinding(protocol: string): TlsFinding {
  *
  * @param host  Nombre de host sin esquema (ej: "example.com")
  */
-export async function inspectTls(host: string): Promise<TlsInspectionResult> {
+export async function inspectTls(
+  host: string,
+  ipAddress: string,
+  signal?: AbortSignal,
+): Promise<TlsInspectionResult> {
   try {
-    const { valid, daysLeft, protocol, issuer, validTo } = await inspectTlsCert(host);
+    const { valid, daysLeft, protocol, issuer, validTo } = await inspectTlsCert(
+      host,
+      ipAddress,
+      signal,
+    );
 
     return {
       sslValid: valid,

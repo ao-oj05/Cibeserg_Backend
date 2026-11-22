@@ -3,7 +3,7 @@
  * @description Servicio de escaneos de ScanDev (SOA — capa de negocio).
  *
  * Requerimientos de seguridad:
- * - BK-02: Rate limiting 10 req/min por usuario
+ * - BK-02: Rate limiting 10 escaneos/hora por usuario
  * - BK-03: Validación Zod delegada al controlador (route.ts)
  * - BK-05: Aislamiento estricto por userId en todas las consultas
  * - BK-06: Mensajes genéricos al cliente; detalles sólo en servidor
@@ -13,8 +13,8 @@
 import { prisma } from '@/lib/db';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { escapeSqlLike } from '@/lib/validators';
-import { runScan } from './scanner';
 import { AuditService } from './audit.service';
+import { enqueueScan } from './scan-queue';
 
 export interface ListScansOptions {
   page?: number;
@@ -24,8 +24,7 @@ export interface ListScansOptions {
 
 export class ScanService {
   /**
-   * Crea un registro de escaneo en PENDING, lanza el motor de escaneo
-   * y persiste los 19 findings con la puntuación de riesgo.
+   * Crea un escaneo en PENDING y lo entrega al worker en segundo plano.
    *
    * @param userId             ID del usuario autenticado (BK-05)
    * @param targetUrl          URL del objetivo (ya validada con Zod en el controlador)
@@ -43,11 +42,13 @@ export class ScanService {
       throw new Error('RS-02:Debes confirmar que eres propietario del dominio antes de escanearlo.');
     }
 
-    // BK-02: Rate limiting — máx 10 escaneos por minuto por usuario
-    const rateLimit = checkRateLimit(`scan:${userId}`, { limit: 10, windowMs: 60_000 });
+    const rateLimit = checkRateLimit(`scan:${userId}`, {
+      limit: 10,
+      windowMs: 60 * 60_000,
+    });
     if (!rateLimit.success) {
       throw new Error(
-        `RATE_LIMIT:Límite de escaneos excedido. Intente en ${Math.ceil(rateLimit.resetMs / 1000)} segundos.`,
+        `RATE_LIMIT:Límite de 10 escaneos por hora excedido. Intente en ${Math.ceil(rateLimit.resetMs / 60_000)} minutos.`,
       );
     }
 
@@ -74,23 +75,21 @@ export class ScanService {
       metadata: { scanId: scan.id, targetUrl },
     });
 
-    // 3. Ejecutar motor de escaneo (actualiza el scan y persiste findings)
-    await runScan({
+    const queued = enqueueScan({
       scanId: scan.id,
       userId,
       targetUrl,
       confirmedOwnership,
     });
+    if (!queued) {
+      await prisma.scan.updateMany({
+        where: { id: scan.id, userId },
+        data: { status: 'FAILED', completedAt: new Date() },
+      });
+      throw new Error('QUEUE_FULL:El servicio está ocupado. Intenta de nuevo más tarde.');
+    }
 
-    // 4. Devolver el scan actualizado con sus findings
-    const updated = await prisma.scan.findUnique({
-      where: { id: scan.id },
-      include: {
-        findings: { orderBy: { createdAt: 'asc' } },
-      },
-    });
-
-    return updated;
+    return scan;
   }
 
   /**

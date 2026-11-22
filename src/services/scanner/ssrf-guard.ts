@@ -48,10 +48,18 @@ function isPrivateIPv4(ip: string): boolean {
  * Checks if an IPv6 address is private, loopback, link-local, or documentation
  */
 function isPrivateIPv6(ip: string): boolean {
+  const firstGroup = ip.toLowerCase().split(':')[0];
+  const firstValue = firstGroup ? Number.parseInt(firstGroup, 16) : 0;
+  if (firstValue < 0x2000 || firstValue > 0x3fff) return true;
+
   const normalized = ip.toLowerCase();
-  if (normalized === "::1" || normalized === "0000:0000:0000:0000:0000:0000:0000:0001") return true;
-  if (normalized === "::" || normalized.startsWith("fe80:") || normalized.startsWith("fc00:") || normalized.startsWith("fd00:")) return true;
-  return false;
+  return (
+    normalized.startsWith('2001:0:') ||
+    normalized.startsWith('2001:2:') ||
+    normalized.startsWith('2001:10:') ||
+    normalized.startsWith('2001:db8:') ||
+    normalized.startsWith('2002:')
+  );
 }
 
 export interface SSRFValidationResult {
@@ -63,7 +71,10 @@ export interface SSRFValidationResult {
 /**
  * Validates domain and prevents SSRF attacks against internal network (BK-01)
  */
-export async function validateTargetAgainstSSRF(rawUrl: string): Promise<SSRFValidationResult> {
+export async function validateTargetAgainstSSRF(
+  rawUrl: string,
+  signal?: AbortSignal,
+): Promise<SSRFValidationResult> {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(rawUrl);
@@ -81,7 +92,7 @@ export async function validateTargetAgainstSSRF(rawUrl: string): Promise<SSRFVal
     throw new Error("No se permiten credenciales en la URL objetivo");
   }
 
-  const host = parsedUrl.hostname.toLowerCase();
+  const host = parsedUrl.hostname.toLowerCase().replace(/^\[|\]$/g, '');
 
   // 3. Block localhost domain patterns
   const blockedHostPatterns = [
@@ -100,7 +111,22 @@ export async function validateTargetAgainstSSRF(rawUrl: string): Promise<SSRFVal
   // 4. DNS Resolution & IP Range Check
   let addresses: Array<{ address: string; family: number }>;
   try {
-    addresses = await dns.lookup(host, { all: true });
+    const literalFamily = net.isIP(host);
+    if (literalFamily) {
+      addresses = [{ address: host, family: literalFamily }];
+    } else {
+      const lookup = dns.lookup(host, { all: true });
+      if (!signal) {
+        addresses = await lookup;
+      } else {
+        addresses = await new Promise((resolve, reject) => {
+          const abort = () => reject(signal.reason ?? new Error('DNS lookup aborted'));
+          signal.addEventListener('abort', abort, { once: true });
+          if (signal.aborted) abort();
+          lookup.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+        });
+      }
+    }
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : "Error desconocido en resolución DNS";
     throw new Error(`No fue posible resolver el dominio ${host}: ${errorMsg}`);

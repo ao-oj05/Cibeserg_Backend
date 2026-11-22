@@ -34,8 +34,8 @@ ScanDev ejecuta evaluaciones pasivas y defensivas contra aplicaciones web y domi
 
 | ID | Requerimiento | Implementación Técnica |
 | :--- | :--- | :--- |
-| **BK-01** | **Prevención de SSRF** | `src/services/scanner/ssrf-guard.ts`: Resolución DNS previa, validación de protocolo (`http`/`https`) y bloqueo estricto de direcciones privadas (10.x, 172.16-31.x, 192.168.x), loopback (127.x, ::1), carrier-grade NAT, multicast y metadata de proveedores cloud (169.254.169.254). |
-| **BK-02** | **Control de DoS y Tiempos** | Timeouts con `AbortController` de máximo 5 segundos en peticiones externas; `src/lib/rate-limit.ts` aplicando ventana deslizante de máximo 10 escaneos por minuto por usuario/IP. |
+| **BK-01** | **Prevención de SSRF** | `src/services/scanner/safe-http.ts` valida cada destino y redirección, conecta a la IP validada y rechaza rangos privados o reservados. |
+| **BK-02** | **Control de DoS y Tiempos** | Escaneos limitados a 30 segundos, peticiones externas a 5 segundos, cuerpos de respuesta a 1 MB, cinco redirecciones y 10 escaneos por hora por usuario. |
 | **BK-03** | **Validación de Entradas** | Esquemas Zod estrictos en cada endpoint REST (`src/lib/validators.ts`), rechazando payloads malformados o inyecciones. |
 | **BK-04** | **Gestión Segura de Sesión** | Tokens JWT firmados con algoritmo `HS256`, expiración a 24 horas y almacenados en cookies con banderas `HttpOnly`, `Secure` y `SameSite=Strict`. |
 | **BK-05** | **Aislamiento Multitenant** | Extracción obligatoria del `userId` a través de la sesión validada; cláusulas `where: { userId: session.userId }` en todas las consultas de Prisma. |
@@ -163,7 +163,7 @@ La API estará disponible en `http://localhost:3000`.
 
 ### Escaneos de Seguridad
 * `GET /api/scans?page=1&limit=10&host=ejemplo.com` — Lista paginada con filtrado seguro.
-* `POST /api/scans` — Inicia un nuevo escaneo (`{ "targetUrl": "https://ejemplo.com" }`).
+* `POST /api/scans` — Encola un escaneo y responde `202 Accepted` (`{ "targetUrl": "https://ejemplo.com", "confirmedOwnership": true }`).
 * `GET /api/scans/:id` — Consulta detalle completo y hallazgos individuales de un escaneo.
 * `DELETE /api/scans/:id` — Elimina un escaneo y sus hallazgos asociados.
 
