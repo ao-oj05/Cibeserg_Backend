@@ -100,7 +100,7 @@ export async function getSessionUser(req?: NextRequest): Promise<SessionPayload 
     where: { id: session.userId },
     select: { suspendedAt: true },
   });
-  return user?.suspendedAt ? null : session;
+  return !user || user.suspendedAt ? null : session;
 }
 
 /**

@@ -21,41 +21,81 @@ export interface RateLimitOptions {
   windowMs?: number; // window size in ms
 }
 
-/**
- * Checks if a key (IP or userId) exceeds rate limits (BK-02)
- */
-export function checkRateLimit(
-  key: string,
-  options: RateLimitOptions = {}
-): { success: boolean; remaining: number; resetMs: number } {
-  const limit = options.limit ?? 10;
-  const windowMs = options.windowMs ?? 60_000;
-  const now = Date.now();
+export interface RateLimitResult {
+  success: boolean;
+  remaining: number;
+  resetMs: number;
+}
 
+function getOptions(options: RateLimitOptions) {
+  return {
+    limit: options.limit ?? 10,
+    windowMs: options.windowMs ?? 60_000,
+  };
+}
+
+export function getRateLimitStatus(
+  key: string,
+  options: RateLimitOptions = {},
+): RateLimitResult {
+  const { limit, windowMs } = getOptions(options);
+  const now = Date.now();
+  const record = rateLimitStore.get(key);
+  if (!record) return { success: true, remaining: limit, resetMs: windowMs };
+
+  record.windowMs = windowMs;
+  record.timestamps = record.timestamps.filter((ts) => now - ts < windowMs);
+  if (record.timestamps.length === 0) {
+    rateLimitStore.delete(key);
+    return { success: true, remaining: limit, resetMs: windowMs };
+  }
+
+  if (record.timestamps.length >= limit) {
+    return {
+      success: false,
+      remaining: 0,
+      resetMs: Math.max(0, windowMs - (now - record.timestamps[0])),
+    };
+  }
+
+  return {
+    success: true,
+    remaining: limit - record.timestamps.length,
+    resetMs: Math.max(0, windowMs - (now - record.timestamps[0])),
+  };
+}
+
+export function recordRateLimitHit(
+  key: string,
+  options: RateLimitOptions = {},
+): RateLimitResult {
+  const { limit, windowMs } = getOptions(options);
+  const status = getRateLimitStatus(key, options);
+  if (!status.success) return status;
+
+  const now = Date.now();
   let record = rateLimitStore.get(key);
   if (!record) {
     record = { timestamps: [], windowMs };
     rateLimitStore.set(key, record);
   }
-
   record.windowMs = windowMs;
-  // Filter timestamps within current window
-  record.timestamps = record.timestamps.filter((ts) => now - ts < windowMs);
-
-  if (record.timestamps.length >= limit) {
-    const oldestTimestamp = record.timestamps[0];
-    const resetMs = Math.max(0, windowMs - (now - oldestTimestamp));
-    return {
-      success: false,
-      remaining: 0,
-      resetMs,
-    };
-  }
-
   record.timestamps.push(now);
+
   return {
     success: true,
-    remaining: limit - record.timestamps.length,
+    remaining: Math.max(0, limit - record.timestamps.length),
     resetMs: windowMs,
   };
+}
+
+/**
+ * Checks if a key (IP or userId) exceeds rate limits (BK-02)
+ */
+export function checkRateLimit(
+  key: string,
+  options: RateLimitOptions = {},
+): RateLimitResult {
+  const status = getRateLimitStatus(key, options);
+  return status.success ? recordRateLimitHit(key, options) : status;
 }

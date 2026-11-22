@@ -74,17 +74,6 @@ export class AuthService {
       throw new Error("INVALID_CREDENTIALS:Credenciales de acceso incorrectas");
     }
 
-    if (user.suspendedAt) {
-      await AuditService.log({
-        userId: user.id,
-        action: "LOGIN_FAILED",
-        ipAddress: context.ipAddress,
-        userAgent: context.userAgent,
-        metadata: { reason: "Cuenta suspendida" },
-      });
-      throw new Error("ACCOUNT_SUSPENDED:Cuenta suspendida");
-    }
-
     const isMatch = await verifyPassword(dto.password, user.passwordHash);
 
     if (!isMatch) {
@@ -96,6 +85,17 @@ export class AuthService {
         metadata: { reason: "Contraseña inválida" },
       });
       throw new Error("INVALID_CREDENTIALS:Credenciales de acceso incorrectas");
+    }
+
+    if (user.suspendedAt) {
+      await AuditService.log({
+        userId: user.id,
+        action: "LOGIN_FAILED",
+        ipAddress: context.ipAddress,
+        userAgent: context.userAgent,
+        metadata: { reason: "Cuenta suspendida" },
+      });
+      throw new Error("ACCOUNT_SUSPENDED:Cuenta suspendida");
     }
 
     // Success audit log
