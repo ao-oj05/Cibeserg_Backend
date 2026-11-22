@@ -8,10 +8,31 @@ import { getClientIp } from "@/lib/client-ip";
 const LOGIN_ATTEMPT_LIMIT = 5;
 const LOGIN_WINDOW_MS = 15 * 60_000;
 
-function recordFailedLogin(email: string | null, ipAddress: string): void {
+async function recordFailedLogin(email: string | null, ipAddress: string): Promise<void> {
   const options = { limit: LOGIN_ATTEMPT_LIMIT, windowMs: LOGIN_WINDOW_MS };
-  if (email) recordRateLimitHit(`login-email:${email}`, options);
-  recordRateLimitHit(`login-ip:${ipAddress}`, options);
+  const keys = [
+    ...(email ? [`login-email:${email}`] : []),
+    `login-ip:${ipAddress}`,
+  ];
+  await Promise.all(keys.map((key) => recordRateLimitHit(key, options)));
+}
+
+async function failedLoginResponse(
+  email: string | null,
+  ipAddress: string,
+  error: string,
+  status: number,
+): Promise<NextResponse> {
+  try {
+    await recordFailedLogin(email, ipAddress);
+  } catch (rateLimitError: unknown) {
+    console.error("[Auth:Login] Could not record failed login", rateLimitError);
+    return NextResponse.json(
+      { error: "Error interno al autenticar usuario" },
+      { status: 500 },
+    );
+  }
+  return NextResponse.json({ error }, { status });
 }
 
 export async function POST(req: NextRequest) {
@@ -37,8 +58,10 @@ export async function POST(req: NextRequest) {
     const emailRateLimitKey = `login-email:${loginEmail}`;
     const ipRateLimitKey = `login-ip:${ipAddress}`;
     const rateLimitOptions = { limit: LOGIN_ATTEMPT_LIMIT, windowMs: LOGIN_WINDOW_MS };
-    const emailLimit = getRateLimitStatus(emailRateLimitKey, rateLimitOptions);
-    const ipLimit = getRateLimitStatus(ipRateLimitKey, rateLimitOptions);
+    const [emailLimit, ipLimit] = await Promise.all([
+      getRateLimitStatus(emailRateLimitKey, rateLimitOptions),
+      getRateLimitStatus(ipRateLimitKey, rateLimitOptions),
+    ]);
     if (!emailLimit.success || !ipLimit.success) {
       return NextResponse.json(
         { error: "Demasiados intentos de inicio de sesión. Intente nuevamente más tarde." },
@@ -72,12 +95,20 @@ export async function POST(req: NextRequest) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Error al iniciar sesión";
     if (message.startsWith("INVALID_CREDENTIALS:")) {
-      recordFailedLogin(loginEmail, ipAddress);
-      return NextResponse.json({ error: message.replace("INVALID_CREDENTIALS:", "") }, { status: 401 });
+      return failedLoginResponse(
+        loginEmail,
+        ipAddress,
+        message.replace("INVALID_CREDENTIALS:", ""),
+        401,
+      );
     }
     if (message.startsWith("ACCOUNT_SUSPENDED:")) {
-      recordFailedLogin(loginEmail, ipAddress);
-      return NextResponse.json({ error: message.replace("ACCOUNT_SUSPENDED:", "") }, { status: 403 });
+      return failedLoginResponse(
+        loginEmail,
+        ipAddress,
+        message.replace("ACCOUNT_SUSPENDED:", ""),
+        403,
+      );
     }
     console.error("[Auth:Login] Error:", err);
     return NextResponse.json({ error: "Error interno al autenticar usuario" }, { status: 500 });

@@ -35,7 +35,7 @@ ScanDev ejecuta evaluaciones pasivas y defensivas contra aplicaciones web y domi
 | ID | Requerimiento | Implementación Técnica |
 | :--- | :--- | :--- |
 | **BK-01** | **Prevención de SSRF** | `src/services/scanner/safe-http.ts` valida cada destino y redirección, conecta a la IP validada y rechaza rangos privados o reservados. |
-| **BK-02** | **Control de DoS y Tiempos** | Escaneos limitados a 30 segundos, peticiones externas a 5 segundos, cuerpos de respuesta a 1 MB, cinco redirecciones y 10 escaneos por hora por usuario. |
+| **BK-02** | **Control de DoS y Tiempos** | Escaneos limitados a 30 segundos, peticiones externas a 5 segundos, cuerpos de respuesta a 1 MB, cinco redirecciones y 10 escaneos por hora por usuario, con límites compartidos mediante PostgreSQL. |
 | **BK-03** | **Validación de Entradas** | Esquemas Zod estrictos en cada endpoint REST (`src/lib/validators.ts`), rechazando payloads malformados o inyecciones. |
 | **BK-04** | **Gestión Segura de Sesión** | Tokens JWT `HS256` con expiración de 8 horas en cookies `HttpOnly`, `Secure` y `SameSite=Lax`; cada solicitud comprueba en base de datos que la cuenta existe y no está suspendida. |
 | **BK-05** | **Aislamiento Multitenant** | Cada consulta y actualización de recursos propios se filtra por `userId` de la sesión validada. |
@@ -49,7 +49,7 @@ ScanDev ejecuta evaluaciones pasivas y defensivas contra aplicaciones web y domi
 ```plaintext
 scandev/
 ├── prisma/
-│   ├── schema.prisma              # Modelo de datos (User, Scan, Finding, Report, Notification, AuditLog)
+│   ├── schema.prisma              # Modelos de usuarios, escaneos, trabajos, límites y reportes
 │   └── migrations/                # Historial de migraciones SQL
 ├── storage/
 │   └── reports/                   # Almacenamiento privado de PDFs generados (fuera de /public)
@@ -74,7 +74,7 @@ scandev/
 │   ├── lib/
 │   │   ├── db.ts                  # Instancia única de PrismaClient con @prisma/adapter-pg
 │   │   ├── auth.ts                # Hashing Argon2id, verificación JWT y cookies de sesión
-│   │   ├── rate-limit.ts          # Control de límite de peticiones por IP/usuario
+│   │   ├── rate-limit.ts          # Límites compartidos por PostgreSQL y hash de identidades
 │   │   └── validators.ts          # Esquemas Zod y sanitizadores de CSV y SQL LIKE
 │   └── services/
 │       ├── report-generator.ts    # Generador de reportes PDF con PDFKit
@@ -149,6 +149,10 @@ npm run prisma:generate
 5. Configura `DATABASE_URL` en `.env` con las credenciales de `app_user` para ejecutar la aplicación. No uses ese rol para migraciones.
 
 Las migraciones aplican restricciones de integridad, propiedad de reportes, auditoría append-only y permisos mínimos. `scripts/01_roles.sql` permite volver a aplicar los permisos del rol de runtime después de desplegar.
+
+La migración `202611220005_shared_runtime_state` crea la cola durable de escaneos y los eventos de rate limit. Aplícala antes de desplegar la nueva versión con credenciales del rol `migrator`; la API usa el rol de runtime `app_user`. El worker se inicia con el proceso Node.js de Next.js y no requiere un servicio Redis adicional.
+
+Render Free sirve para pruebas y demos, no para producción: los servicios web se suspenden por inactividad, el disco local es efímero y las bases PostgreSQL gratuitas expiran a los 30 días. En este proyecto los PDFs se guardan en disco local, así que para conservarlos después de reinicios se necesitará almacenamiento persistente/externo o un plan que lo ofrezca. Consulta las [limitaciones actuales de Render Free](https://render.com/docs/free).
 
 ### 5. Iniciar en Modo Desarrollo
 ```bash

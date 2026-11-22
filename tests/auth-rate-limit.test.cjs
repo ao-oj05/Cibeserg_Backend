@@ -15,33 +15,28 @@ require.extensions['.ts'] = (module, filename) => {
   module._compile(output, filename);
 };
 
-const { getRateLimitStatus, recordRateLimitHit } = require('../src/lib/rate-limit.ts');
+const { calculateRateLimit } = require('../src/lib/rate-limit-policy.ts');
 
-test('login status checks do not count as failed attempts', () => {
-  const key = `login:test-${Date.now()}`;
-  const options = { limit: 5, windowMs: 15 * 60_000 };
+test('rate-limit status counts only persisted hits in the active window', () => {
+  const now = Date.now();
+  const windowMs = 15 * 60_000;
+  const hits = [new Date(now - 1_000), new Date(now - windowMs - 1)];
 
-  assert.equal(getRateLimitStatus(key, options).remaining, 5);
-  assert.equal(getRateLimitStatus(key, options).remaining, 5);
-  recordRateLimitHit(key, options);
-  assert.equal(getRateLimitStatus(key, options).remaining, 4);
+  assert.deepEqual(calculateRateLimit(hits, now, 5, windowMs), {
+    success: true,
+    remaining: 4,
+    resetMs: windowMs - 1_000,
+  });
 });
 
-test('blocks login after five failures until the 15-minute window expires', (t) => {
-  const key = `login-window:test-${Date.now()}`;
-  const options = { limit: 5, windowMs: 15 * 60_000 };
-  const originalNow = Date.now;
-  let now = originalNow();
-  Date.now = () => now;
-  t.after(() => {
-    Date.now = originalNow;
-  });
+test('blocks a key at five hits and allows it after the 15-minute window expires', () => {
+  const now = Date.now();
+  const windowMs = 15 * 60_000;
+  const hits = Array.from({ length: 5 }, (_, index) => new Date(now - index));
 
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    recordRateLimitHit(key, options);
-  }
-  assert.equal(getRateLimitStatus(key, options).success, false);
-
-  now += options.windowMs + 1;
-  assert.equal(getRateLimitStatus(key, options).success, true);
+  assert.equal(calculateRateLimit(hits, now, 5, windowMs).success, false);
+  assert.equal(
+    calculateRateLimit([new Date(now - windowMs - 1)], now, 5, windowMs).success,
+    true,
+  );
 });

@@ -57,19 +57,12 @@ test('blocks private and IPv4-mapped loopback targets before connecting', async 
 });
 
 test('allows at most ten scans per user during one hour', () => {
-  const { checkRateLimit } = require('../src/lib/rate-limit.ts');
-  const key = `scan:test-${Date.now()}`;
+  const { calculateRateLimit } = require('../src/lib/rate-limit-policy.ts');
+  const now = Date.now();
+  const hits = Array.from({ length: 10 }, (_, index) => new Date(now - index));
 
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    assert.equal(
-      checkRateLimit(key, { limit: 10, windowMs: 60 * 60_000 }).success,
-      true,
-    );
-  }
-  assert.equal(
-    checkRateLimit(key, { limit: 10, windowMs: 60 * 60_000 }).success,
-    false,
-  );
+  assert.equal(calculateRateLimit(hits.slice(1), now, 10, 60 * 60_000).success, true);
+  assert.equal(calculateRateLimit(hits, now, 10, 60 * 60_000).success, false);
 });
 
 test('rejects a response larger than 1 MB', async (t) => {

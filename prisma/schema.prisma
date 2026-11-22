@@ -20,10 +20,15 @@ enum ScanStatus {
   CANCELED
 }
 
+enum ScanJobStatus {
+  PENDING
+  RUNNING
+}
+
 enum RiskLevel {
-  SAFE      // 80 a 100 (Seguro)
-  WARNING   // 60 a 79 (Riesgo medio)
-  CRITICAL  // 0 a 59 (Riesgo alto)
+  SAFE // 80 a 100 (Seguro)
+  WARNING // 60 a 79 (Riesgo medio)
+  CRITICAL // 0 a 59 (Riesgo alto)
 }
 
 enum FindingStatus {
@@ -32,11 +37,11 @@ enum FindingStatus {
 }
 
 enum FindingSeverity {
-  CRITICAL  // -20 pts
-  HIGH      // -12 pts
-  MEDIUM    // -6 pts
-  LOW       // -2 pts
-  INFO      // 0 pts (Comprobaciones aprobadas siempre son INFO)
+  CRITICAL // -20 pts
+  HIGH // -12 pts
+  MEDIUM // -6 pts
+  LOW // -2 pts
+  INFO // 0 pts (Comprobaciones aprobadas siempre son INFO)
 }
 
 enum ReportType {
@@ -64,68 +69,93 @@ enum AuditAction {
 }
 
 model User {
-  id           String         @id @default(uuid())
-  email        String         @unique
-  passwordHash String
-  name         String?
-  role         UserRole       @default(USER)
-  suspendedAt  DateTime?
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  scans        Scan[]
-  reports      Report[]
+  id            String         @id @default(uuid())
+  email         String         @unique
+  passwordHash  String
+  name          String?
+  role          UserRole       @default(USER)
+  suspendedAt   DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  scans         Scan[]
+  reports       Report[]
   notifications Notification[]
-  auditLogs    AuditLog[]
+  auditLogs     AuditLog[]
 
   @@map("users")
 }
 
 model Scan {
-  id                 String        @id @default(uuid())
+  id                 String     @id @default(uuid())
   userId             String
   targetUrl          String
   host               String
   ipAddress          String?
-  riskScore          Int           @default(0) // 0 a 100
-  riskLevel          RiskLevel     @default(CRITICAL)
-  status             ScanStatus    @default(PENDING)
+  riskScore          Int        @default(0) // 0 a 100
+  riskLevel          RiskLevel  @default(CRITICAL)
+  status             ScanStatus @default(PENDING)
   responseTimeMs     Int?
-  httpsRedirect      Boolean       @default(false)
-  sslValid           Boolean       @default(false)
+  httpsRedirect      Boolean    @default(false)
+  sslValid           Boolean    @default(false)
   sslIssuer          String?
   sslDaysLeft        Int?
   sslProtocol        String?
-  rawHeaders         Json?         // Máximo 50 cabeceras / 4 KB, sin Set-Cookie ni Authorization
-  confirmedOwnership Boolean       @default(true) // RS-02: Casilla obligatoria de autorización
-  startedAt          DateTime      @default(now())
+  rawHeaders         Json? // Máximo 50 cabeceras / 4 KB, sin Set-Cookie ni Authorization
+  confirmedOwnership Boolean    @default(true) // RS-02: Casilla obligatoria de autorización
+  startedAt          DateTime   @default(now())
   completedAt        DateTime?
-  createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @updatedAt
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
 
-  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  findings           Finding[]
-  reports            Report[]
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  findings Finding[]
+  reports  Report[]
+  scanJob  ScanJob?
 
   @@index([userId, host])
   @@index([userId, createdAt])
   @@map("scans")
 }
 
+model ScanJob {
+  id        String        @id @default(uuid())
+  scanId    String        @unique
+  status    ScanJobStatus @default(PENDING)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  lockedAt  DateTime?
+
+  scan Scan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@map("scan_jobs")
+}
+
+model RateLimitHit {
+  id        String   @id @default(uuid())
+  keyDigest String   @db.VarChar(64)
+  createdAt DateTime @default(now())
+
+  @@index([keyDigest, createdAt])
+  @@index([createdAt])
+  @@map("rate_limit_hits")
+}
+
 model Finding {
   id          String          @id @default(uuid())
   scanId      String
-  category    String          // HTTP_HEADERS, TLS_SSL, CONNECTION
+  category    String // HTTP_HEADERS, TLS_SSL, CONNECTION
   checkKey    String          @db.VarChar(50) // CR-11: Clave estable única (CSP, HSTS, CORS, etc.)
   title       String
   description String
-  status      FindingStatus   // PASSED o FAILED
-  severity    FindingSeverity @default(INFO)  // Si pasa es INFO; si falla: CRITICAL, HIGH, MEDIUM, LOW
+  status      FindingStatus // PASSED o FAILED
+  severity    FindingSeverity @default(INFO) // Si pasa es INFO; si falla: CRITICAL, HIGH, MEDIUM, LOW
   remediation String?
-  evidence    Json?           // Detalles de la prueba (ej: sondas CORS, origen reflejado, etc.)
+  evidence    Json? // Detalles de la prueba (ej: sondas CORS, origen reflejado, etc.)
   rawData     Json?
   createdAt   DateTime        @default(now())
 
-  scan        Scan            @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  scan Scan @relation(fields: [scanId], references: [id], onDelete: Cascade)
 
   @@unique([scanId, checkKey]) // Garantiza exactamente una fila por comprobación por escaneo
   @@index([scanId])
@@ -139,11 +169,11 @@ model Report {
   type      ReportType @default(EXECUTIVE)
   fileName  String
   filePath  String
-  expiresAt DateTime   // Máximo 7 días de retención (RS-07 / CR-12)
+  expiresAt DateTime // Máximo 7 días de retención (RS-07 / CR-12)
   createdAt DateTime   @default(now())
 
-  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  scan      Scan?      @relation(fields: [scanId], references: [id], onDelete: SetNull)
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scan Scan? @relation(fields: [scanId], references: [id], onDelete: SetNull)
 
   @@index([userId, expiresAt])
   @@map("reports")
@@ -158,7 +188,7 @@ model Notification {
   isRead    Boolean          @default(false)
   createdAt DateTime         @default(now())
 
-  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isRead])
   @@map("notifications")
@@ -173,7 +203,7 @@ model AuditLog {
   metadata  Json?
   createdAt DateTime    @default(now())
 
-  user      User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([userId, action])
   @@index([createdAt])

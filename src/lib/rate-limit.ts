@@ -1,30 +1,15 @@
-interface RateLimitRecord {
-  timestamps: number[];
-  windowMs: number;
-}
+import { createHmac } from "node:crypto";
+import { prisma } from "@/lib/db";
+import { env } from "@/lib/env";
+import { calculateRateLimit, type RateLimitResult } from "./rate-limit-policy";
 
-const rateLimitStore = new Map<string, RateLimitRecord>();
-
-// Clean up old entries every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, record] of rateLimitStore.entries()) {
-    record.timestamps = record.timestamps.filter((ts) => now - ts < record.windowMs);
-    if (record.timestamps.length === 0) {
-      rateLimitStore.delete(key);
-    }
-  }
-}, 5 * 60 * 1000).unref?.();
+const MAX_RATE_LIMIT_WINDOW_MS = 60 * 60_000;
+const CLEANUP_INTERVAL_MS = 60_000;
+let lastCleanupAt = 0;
 
 export interface RateLimitOptions {
-  limit?: number; // max requests
-  windowMs?: number; // window size in ms
-}
-
-export interface RateLimitResult {
-  success: boolean;
-  remaining: number;
-  resetMs: number;
+  limit?: number;
+  windowMs?: number;
 }
 
 function getOptions(options: RateLimitOptions) {
@@ -34,68 +19,84 @@ function getOptions(options: RateLimitOptions) {
   };
 }
 
+function digestKey(key: string): string {
+  return createHmac("sha256", env.JWT_SECRET).update(key).digest("hex");
+}
+
+async function withRateLimitHits<T>(
+  key: string,
+  windowMs: number,
+  operation: (timestamps: Date[], now: number, recordHit: () => Promise<Date>) => Promise<T>,
+): Promise<T> {
+  const keyDigest = digestKey(key);
+  return prisma.$transaction(async (transaction) => {
+    await transaction.$queryRaw`
+      SELECT pg_advisory_xact_lock(hashtextextended(${keyDigest}, 0))
+    `;
+
+    const now = Date.now();
+    if (now - lastCleanupAt >= CLEANUP_INTERVAL_MS) {
+      lastCleanupAt = now;
+      try {
+        await transaction.rateLimitHit.deleteMany({
+          where: { createdAt: { lt: new Date(now - MAX_RATE_LIMIT_WINDOW_MS) } },
+        });
+      } catch (error) {
+        lastCleanupAt = 0;
+        throw error;
+      }
+    }
+
+    const hits = await transaction.rateLimitHit.findMany({
+      where: {
+        keyDigest,
+        createdAt: { gt: new Date(now - windowMs) },
+      },
+      orderBy: { createdAt: "asc" },
+      select: { createdAt: true },
+    });
+
+    return operation(
+      hits.map((hit) => hit.createdAt),
+      now,
+      async () => {
+        const hit = await transaction.rateLimitHit.create({
+          data: { keyDigest },
+          select: { createdAt: true },
+        });
+        return hit.createdAt;
+      },
+    );
+  });
+}
+
 export function getRateLimitStatus(
   key: string,
   options: RateLimitOptions = {},
-): RateLimitResult {
+): Promise<RateLimitResult> {
   const { limit, windowMs } = getOptions(options);
-  const now = Date.now();
-  const record = rateLimitStore.get(key);
-  if (!record) return { success: true, remaining: limit, resetMs: windowMs };
-
-  record.windowMs = windowMs;
-  record.timestamps = record.timestamps.filter((ts) => now - ts < windowMs);
-  if (record.timestamps.length === 0) {
-    rateLimitStore.delete(key);
-    return { success: true, remaining: limit, resetMs: windowMs };
-  }
-
-  if (record.timestamps.length >= limit) {
-    return {
-      success: false,
-      remaining: 0,
-      resetMs: Math.max(0, windowMs - (now - record.timestamps[0])),
-    };
-  }
-
-  return {
-    success: true,
-    remaining: limit - record.timestamps.length,
-    resetMs: Math.max(0, windowMs - (now - record.timestamps[0])),
-  };
+  return withRateLimitHits(key, windowMs, async (timestamps, now) =>
+    calculateRateLimit(timestamps, now, limit, windowMs),
+  );
 }
 
 export function recordRateLimitHit(
   key: string,
   options: RateLimitOptions = {},
-): RateLimitResult {
+): Promise<RateLimitResult> {
   const { limit, windowMs } = getOptions(options);
-  const status = getRateLimitStatus(key, options);
-  if (!status.success) return status;
+  return withRateLimitHits(key, windowMs, async (timestamps, now, addHit) => {
+    const current = calculateRateLimit(timestamps, now, limit, windowMs);
+    if (!current.success) return current;
 
-  const now = Date.now();
-  let record = rateLimitStore.get(key);
-  if (!record) {
-    record = { timestamps: [], windowMs };
-    rateLimitStore.set(key, record);
-  }
-  record.windowMs = windowMs;
-  record.timestamps.push(now);
-
-  return {
-    success: true,
-    remaining: Math.max(0, limit - record.timestamps.length),
-    resetMs: windowMs,
-  };
+    timestamps.push(await addHit());
+    return calculateRateLimit(timestamps, Date.now(), limit, windowMs);
+  });
 }
 
-/**
- * Checks if a key (IP or userId) exceeds rate limits (BK-02)
- */
 export function checkRateLimit(
   key: string,
   options: RateLimitOptions = {},
-): RateLimitResult {
-  const status = getRateLimitStatus(key, options);
-  return status.success ? recordRateLimitHit(key, options) : status;
+): Promise<RateLimitResult> {
+  return recordRateLimitHit(key, options);
 }

@@ -42,7 +42,7 @@ export class ScanService {
       throw new Error('RS-02:Debes confirmar que eres propietario del dominio antes de escanearlo.');
     }
 
-    const rateLimit = checkRateLimit(`scan:${userId}`, {
+    const rateLimit = await checkRateLimit(`scan:${userId}`, {
       limit: 10,
       windowMs: 60 * 60_000,
     });
@@ -67,20 +67,29 @@ export class ScanService {
       },
     });
 
-    // 2. Registrar evento de auditoría SCAN_CREATED (no SCAN_STARTED)
-    await AuditService.log({
-      userId,
-      action: 'SCAN_CREATED',
-      ipAddress,
-      metadata: { scanId: scan.id, targetUrl },
-    });
+    let queued: boolean;
+    try {
+      await AuditService.log({
+        userId,
+        action: 'SCAN_CREATED',
+        ipAddress,
+        metadata: { scanId: scan.id, targetUrl },
+      });
 
-    const queued = enqueueScan({
-      scanId: scan.id,
-      userId,
-      targetUrl,
-      confirmedOwnership,
-    });
+      queued = await enqueueScan({
+        scanId: scan.id,
+        userId,
+        targetUrl,
+        confirmedOwnership,
+      });
+    } catch (error) {
+      await prisma.scan.updateMany({
+        where: { id: scan.id, userId, status: 'PENDING' },
+        data: { status: 'FAILED', completedAt: new Date() },
+      });
+      throw error;
+    }
+
     if (!queued) {
       await prisma.scan.updateMany({
         where: { id: scan.id, userId },
