@@ -2,9 +2,8 @@ import { prisma } from "@/lib/db";
 import { generateSecurityPdfReport } from "./report-generator";
 import { AuditService } from "./audit.service";
 import { sanitizeCsvCell } from "@/lib/validators";
+import { readStoredReport } from "@/lib/report-storage";
 import { ReportType } from "@prisma/client";
-import fs from "fs";
-import path from "path";
 import crypto from "crypto";
 
 export interface GenerateReportDto {
@@ -112,18 +111,8 @@ export class ReportService {
     }
 
     // Path traversal check
-    const safeStorageDir = path.resolve(process.env.STORAGE_REPORTS_DIR || "./storage/reports");
-    const absolutePath = path.resolve(report.filePath);
-
-    if (!absolutePath.startsWith(safeStorageDir)) {
-      throw new Error("FORBIDDEN:Acceso no autorizado al sistema de archivos");
-    }
-
-    if (!fs.existsSync(absolutePath)) {
-      throw new Error("NOT_FOUND:El archivo físico del reporte no existe en el almacenamiento");
-    }
-
-    const buffer = fs.readFileSync(absolutePath);
+    const storageDirectory = process.env.STORAGE_REPORTS_DIR || "./storage/reports";
+    const buffer = await readStoredReport(storageDirectory, report.filePath);
     return {
       fileName: report.fileName,
       buffer,

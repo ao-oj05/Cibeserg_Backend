@@ -84,7 +84,7 @@ export const UpdateNotificationsSchema = z.object({
 
 /**
  * Sanitizes input for CSV export to prevent CSV Formula Injection (BK-07).
- * Prepend single quote (') if the cell begins with dangerous formula triggers (=, +, -, @, \t, \r).
+ * Prepend a single quote when a cell starts with a formula trigger or control whitespace.
  */
 export function sanitizeCsvCell(value: unknown): string {
   if (value === null || value === undefined) {
@@ -93,8 +93,9 @@ export function sanitizeCsvCell(value: unknown): string {
   let str = String(value);
 
   // Check for formula injection triggers
-  const dangerousPrefixes = ["=", "+", "-", "@", "\t", "\r"];
-  if (dangerousPrefixes.some((prefix) => str.startsWith(prefix))) {
+  const formulaAfterWhitespace = /^[\s\uFEFF]*[=+\-@]/.test(str);
+  const startsWithControlWhitespace = /^[\t\r\n]/.test(str);
+  if (formulaAfterWhitespace || startsWithControlWhitespace) {
     str = `'${str}`;
   }
 

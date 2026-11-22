@@ -328,9 +328,8 @@ async function checkCORS(targetUrl: string, signal?: AbortSignal): Promise<Heade
       // Timeout o error de red — la sonda no pudo completarse
     }
 
-    const reflected =
-      acao !== null &&
-      (acao === cfg.origin || acao === '*');
+    const expectedOrigin = cfg.origin ?? 'null';
+    const reflected = acao !== null && (acao === expectedOrigin || acao === '*');
 
     const credentialsExposed =
       reflected &&

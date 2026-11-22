@@ -19,12 +19,12 @@ require.extensions['.ts'] = (module, filename) => {
 };
 
 function fakeRequest(responseFactory) {
-  return (_options, onResponse) => {
+  return (options, onResponse) => {
     const request = new EventEmitter();
     request.end = () => {
       process.nextTick(() => {
         const response = new EventEmitter();
-        const plan = responseFactory();
+        const plan = responseFactory(options);
         response.statusCode = plan.status;
         response.headers = plan.headers ?? {};
         response.destroy = () => response;
@@ -116,4 +116,40 @@ test('stops after five redirects', async (t) => {
 
   await assert.rejects(safeHttpRequest('http://scanner.test'), /Too many redirects/);
   assert.equal(requests, 6);
+});
+
+test('sends and evaluates a literal null Origin in the CORS probes', async (t) => {
+  const originalLookup = dns.lookup;
+  const originalRequest = http.request;
+  const origins = [];
+  t.after(() => {
+    dns.lookup = originalLookup;
+    http.request = originalRequest;
+  });
+
+  dns.lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+  http.request = fakeRequest((options) => {
+    const origin = Object.entries(options.headers).find(
+      ([name]) => name.toLowerCase() === 'origin',
+    )?.[1];
+    origins.push(origin);
+    return {
+      status: 200,
+      headers: {
+        'access-control-allow-origin': origin,
+        'access-control-allow-credentials': 'true',
+      },
+    };
+  });
+  const { auditHttpHeaders } = require('../src/services/scanner/http-headers.ts');
+
+  const findings = await auditHttpHeaders('http://scanner.test', {});
+  const corsFinding = findings.find((finding) => finding.checkKey === 'CORS');
+  const nullProbe = corsFinding.evidence.probes.find((probe) => probe.label === 'S3_null_origin');
+
+  assert.ok(origins.includes('null'));
+  assert.equal(corsFinding.status, 'FAILED');
+  assert.equal(nullProbe.originSent, 'null');
+  assert.equal(nullProbe.acao, 'null');
+  assert.equal(nullProbe.reflected, true);
 });

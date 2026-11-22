@@ -20,7 +20,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     const { id } = await params;
     const { fileName, buffer } = await ReportService.getDownloadableReport(session.userId, id);
 
-    return new NextResponse(buffer, {
+    return new NextResponse(new Uint8Array(buffer), {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",

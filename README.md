@@ -40,7 +40,7 @@ ScanDev ejecuta evaluaciones pasivas y defensivas contra aplicaciones web y domi
 | **BK-04** | **Gestión Segura de Sesión** | Tokens JWT `HS256` con expiración de 8 horas en cookies `HttpOnly`, `Secure` y `SameSite=Lax`; cada solicitud comprueba en base de datos que la cuenta existe y no está suspendida. |
 | **BK-05** | **Aislamiento Multitenant** | Cada consulta y actualización de recursos propios se filtra por `userId` de la sesión validada. |
 | **BK-06** | **Manejo Seguro de Errores** | Respuestas con códigos HTTP canónicos y mensajes controlados que evitan filtrar trazas de error, versiones o queries SQL al cliente. |
-| **BK-07** | **Protección de Archivos y CSV** | Archivos PDF almacenados en `storage/reports/` (fuera de `/public`), descarga condicionada a validación de propietario y vigencia de 7 días. Saneamiento de prefijos peligrosos (`=`, `+`, `-`, `@`) en exportaciones CSV. |
+| **BK-07** | **Protección de Archivos y CSV** | Archivos PDF almacenados en `storage/reports/` (fuera de `/public`), descarga condicionada a validación de propietario, vigencia de 7 días y ruta canónica dentro del almacenamiento. Las exportaciones CSV neutralizan fórmulas incluso después de espacios o caracteres de control. |
 
 ---
 
