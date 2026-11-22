@@ -56,6 +56,52 @@ test('blocks private and IPv4-mapped loopback targets before connecting', async 
   }
 });
 
+test('blocks a public-looking hostname that resolves to a private address', async (t) => {
+  const originalLookup = dns.lookup;
+  const originalRequest = http.request;
+  let requests = 0;
+  t.after(() => {
+    dns.lookup = originalLookup;
+    http.request = originalRequest;
+  });
+
+  dns.lookup = async () => [{ address: '10.0.0.7', family: 4 }];
+  http.request = (...args) => {
+    requests += 1;
+    return fakeRequest(() => ({ status: 200 }))(...args);
+  };
+  const { safeHttpRequest } = require('../src/services/scanner/safe-http.ts');
+
+  await assert.rejects(safeHttpRequest('http://scanner.test'), /rango privado\/local restringido/);
+  assert.equal(requests, 0);
+});
+
+test('revalidates every redirect destination before making the next request', async (t) => {
+  const originalLookup = dns.lookup;
+  const originalRequest = http.request;
+  let requests = 0;
+  t.after(() => {
+    dns.lookup = originalLookup;
+    http.request = originalRequest;
+  });
+
+  dns.lookup = async (hostname) => [
+    { address: hostname === 'scanner.test' ? '93.184.216.34' : '10.0.0.7', family: 4 },
+  ];
+  http.request = fakeRequest(() => {
+    requests += 1;
+    return {
+      status: 302,
+      headers: { location: 'http://redirect.test/' },
+      ended: false,
+    };
+  });
+  const { safeHttpRequest } = require('../src/services/scanner/safe-http.ts');
+
+  await assert.rejects(safeHttpRequest('http://scanner.test'), /rango privado\/local restringido/);
+  assert.equal(requests, 1);
+});
+
 test('allows at most ten scans per user during one hour', () => {
   const { calculateRateLimit } = require('../src/lib/rate-limit-policy.ts');
   const now = Date.now();

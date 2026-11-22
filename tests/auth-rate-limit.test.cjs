@@ -17,7 +17,7 @@ require.extensions['.ts'] = (module, filename) => {
 
 const { calculateRateLimit } = require('../src/lib/rate-limit-policy.ts');
 
-test('rate-limit status counts only persisted hits in the active window', () => {
+test('rate-limit status counts only hits in the active window', () => {
   const now = Date.now();
   const windowMs = 15 * 60_000;
   const hits = [new Date(now - 1_000), new Date(now - windowMs - 1)];
