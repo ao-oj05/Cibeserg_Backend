@@ -96,10 +96,11 @@ function inspectTlsCert(host: string): Promise<{
           : 'Desconocido';
 
         // Sujeto
-        const subject = cert.subject?.CN ?? host;
+        const subject = typeof cert.subject?.CN === 'string' ? cert.subject.CN : host;
+        const validTo = typeof cert.valid_to === 'string' ? cert.valid_to : '';
 
         socket.destroy();
-        resolve({ valid, daysLeft, protocol, issuer, subject, validTo: cert.valid_to });
+        resolve({ valid, daysLeft, protocol, issuer, subject, validTo });
       },
     );
 

@@ -69,6 +69,7 @@ model User {
   passwordHash String
   name         String?
   role         UserRole       @default(USER)
+  suspendedAt  DateTime?
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
   scans        Scan[]
@@ -86,7 +87,7 @@ model Scan {
   host               String
   ipAddress          String?
   riskScore          Int           @default(0) // 0 a 100
-  riskLevel          RiskLevel     @default(SAFE)
+  riskLevel          RiskLevel     @default(CRITICAL)
   status             ScanStatus    @default(PENDING)
   responseTimeMs     Int?
   httpsRedirect      Boolean       @default(false)

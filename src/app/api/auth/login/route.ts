@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { LoginSchema } from "@/lib/validators";
 import { AuthService } from "@/services/auth.service";
 import { getSessionCookieOptions } from "@/lib/auth";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(req: NextRequest) {
   const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "127.0.0.1";
@@ -15,6 +16,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "Credenciales incompletas o malformadas" },
         { status: 400 }
+      );
+    }
+
+    const emailLimit = checkRateLimit(`login-email:${parseResult.data.email}`, {
+      limit: 5,
+      windowMs: 15 * 60_000,
+    });
+    const ipLimit = checkRateLimit(`login-ip:${ipAddress}`, {
+      limit: 5,
+      windowMs: 15 * 60_000,
+    });
+    if (!emailLimit.success || !ipLimit.success) {
+      return NextResponse.json(
+        { error: "Demasiados intentos de inicio de sesión. Intente nuevamente más tarde." },
+        { status: 429 },
       );
     }
 
@@ -45,6 +61,9 @@ export async function POST(req: NextRequest) {
     const message = err instanceof Error ? err.message : "Error al iniciar sesión";
     if (message.startsWith("INVALID_CREDENTIALS:")) {
       return NextResponse.json({ error: message.replace("INVALID_CREDENTIALS:", "") }, { status: 401 });
+    }
+    if (message.startsWith("ACCOUNT_SUSPENDED:")) {
+      return NextResponse.json({ error: message.replace("ACCOUNT_SUSPENDED:", "") }, { status: 403 });
     }
     console.error("[Auth:Login] Error:", err);
     return NextResponse.json({ error: "Error interno al autenticar usuario" }, { status: 500 });

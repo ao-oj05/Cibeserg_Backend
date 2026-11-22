@@ -24,7 +24,7 @@ ScanDev ejecuta evaluaciones pasivas y defensivas contra aplicaciones web y domi
 | **Acceso a Datos / ORM** | Prisma ORM (`@prisma/client` + `@prisma/adapter-pg`) |
 | **Base de Datos** | PostgreSQL 18 (rol restringido `app_user`) |
 | **Auditoría Nativa** | `fetch`, `tls`, `https`, `dns`, `net` (Node.js nativo) |
-| **Autenticación** | `argon2` (Argon2id con fallback scrypt) + `jose` (JWT en cookies HttpOnly/Secure) |
+| **Autenticación** | `argon2` (Argon2id) + `jose` (JWT en cookies HttpOnly/Secure) |
 | **Validación de Datos** | `zod` |
 | **Generación de Reportes** | `pdfkit` |
 
@@ -118,11 +118,33 @@ NODE_ENV="development"
 npm install
 ```
 
-### 4. Generación y Migración de Base de Datos (Prisma)
+### 4. Preparación y migración de la base de datos
+
+1. Crea la base `scandev_db` en PostgreSQL 18.
+2. Ejecuta como administrador, conectado a esa base:
+
 ```bash
-npm run prisma:generate
-npm run prisma:migrate
+psql -U postgres -d scandev_db -f scripts/00_database_setup.sql
 ```
+
+3. Asigna contraseñas seguras a los roles en la consola interactiva de `psql`:
+
+```text
+\password migrator
+\password app_user
+```
+
+4. En PowerShell, aplica las migraciones con la URL del rol `migrator` y genera Prisma Client:
+
+```powershell
+$env:DATABASE_URL = "postgresql://migrator:<password>@localhost:5432/scandev_db?schema=public"
+npx prisma migrate deploy
+npm run prisma:generate
+```
+
+5. Configura `DATABASE_URL` en `.env` con las credenciales de `app_user` para ejecutar la aplicación. No uses ese rol para migraciones.
+
+Las migraciones aplican restricciones de integridad, propiedad de reportes, auditoría append-only y permisos mínimos. `scripts/01_roles.sql` permite volver a aplicar los permisos del rol de runtime después de desplegar.
 
 ### 5. Iniciar en Modo Desarrollo
 ```bash

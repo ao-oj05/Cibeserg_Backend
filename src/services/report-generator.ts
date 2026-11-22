@@ -19,7 +19,7 @@ export interface GeneratePdfOptions {
     completedAt: Date | null;
     findings?: Array<{
       category: string;
-      ruleKey: string;
+      checkKey: string;
       title: string;
       description: string;
       status: string;

@@ -98,7 +98,7 @@ export async function validateTargetAgainstSSRF(rawUrl: string): Promise<SSRFVal
   }
 
   // 4. DNS Resolution & IP Range Check
-  let addresses: dns.LookupAddress[];
+  let addresses: Array<{ address: string; family: number }>;
   try {
     addresses = await dns.lookup(host, { all: true });
   } catch (err: unknown) {

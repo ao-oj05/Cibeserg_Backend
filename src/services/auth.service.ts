@@ -56,6 +56,10 @@ export class AuthService {
    * Authenticates user, verifies password, registers audit log and issues JWT token
    */
   static async login(dto: LoginUserDto, context: RequestContext) {
+    if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+      throw new Error("CONFIG_ERROR:Configuración de autenticación inválida");
+    }
+
     const user = await prisma.user.findUnique({
       where: { email: dto.email },
     });
@@ -68,6 +72,17 @@ export class AuthService {
         metadata: { reason: "Usuario no registrado", email: dto.email },
       });
       throw new Error("INVALID_CREDENTIALS:Credenciales de acceso incorrectas");
+    }
+
+    if (user.suspendedAt) {
+      await AuditService.log({
+        userId: user.id,
+        action: "LOGIN_FAILED",
+        ipAddress: context.ipAddress,
+        userAgent: context.userAgent,
+        metadata: { reason: "Cuenta suspendida" },
+      });
+      throw new Error("ACCOUNT_SUSPENDED:Cuenta suspendida");
     }
 
     const isMatch = await verifyPassword(dto.password, user.passwordHash);

@@ -27,7 +27,7 @@
  *   0–59   → CRITICAL
  */
 
-import { PrismaClient, FindingStatus, FindingSeverity, RiskLevel, ScanStatus } from '@prisma/client';
+import { Prisma, PrismaClient, FindingStatus, FindingSeverity, RiskLevel, ScanStatus } from '@prisma/client';
 import { validateTargetAgainstSSRF } from './ssrf-guard';
 import { auditHttpHeaders, headersToObject } from './http-headers';
 import { inspectTls } from './tls-inspector';
@@ -190,7 +190,7 @@ export async function runScan({ scanId, userId, targetUrl, confirmedOwnership }:
             status: f.status,
             severity: f.severity,
             remediation: f.remediation ?? null,
-            evidence: f.evidence ?? undefined,
+            evidence: f.evidence as Prisma.InputJsonValue | undefined,
           },
           update: {
             category: f.category,
@@ -199,7 +199,7 @@ export async function runScan({ scanId, userId, targetUrl, confirmedOwnership }:
             status: f.status,
             severity: f.severity,
             remediation: f.remediation ?? null,
-            evidence: f.evidence ?? undefined,
+            evidence: f.evidence as Prisma.InputJsonValue | undefined,
           },
         }),
       ),
