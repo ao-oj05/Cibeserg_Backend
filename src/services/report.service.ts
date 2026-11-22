@@ -3,6 +3,7 @@ import { generateSecurityPdfReport } from "./report-generator";
 import { AuditService } from "./audit.service";
 import { sanitizeCsvCell } from "@/lib/validators";
 import { readStoredReport } from "@/lib/report-storage";
+import { env } from "@/lib/env";
 import { ReportType } from "@prisma/client";
 import crypto from "crypto";
 
@@ -111,7 +112,7 @@ export class ReportService {
     }
 
     // Path traversal check
-    const storageDirectory = process.env.STORAGE_REPORTS_DIR || "./storage/reports";
+    const storageDirectory = env.STORAGE_REPORTS_DIR;
     const buffer = await readStoredReport(storageDirectory, report.filePath);
     return {
       fileName: report.fileName,

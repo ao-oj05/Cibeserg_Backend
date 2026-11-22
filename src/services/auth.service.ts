@@ -56,10 +56,6 @@ export class AuthService {
    * Authenticates user, verifies password, registers audit log and issues JWT token
    */
   static async login(dto: LoginUserDto, context: RequestContext) {
-    if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
-      throw new Error("CONFIG_ERROR:Configuración de autenticación inválida");
-    }
-
     const user = await prisma.user.findUnique({
       where: { email: dto.email },
     });

@@ -2,14 +2,11 @@ import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/db";
+import { env } from "@/lib/env";
 
 export const AUTH_COOKIE_NAME = "scandev_session";
 function getJwtSecret(): Uint8Array {
-  const secret = process.env.JWT_SECRET;
-  if (!secret || secret.length < 32) {
-    throw new Error("JWT_SECRET no configurado");
-  }
-  return new TextEncoder().encode(secret);
+  return new TextEncoder().encode(env.JWT_SECRET);
 }
 
 export interface SessionPayload {
@@ -107,7 +104,7 @@ export async function getSessionUser(req?: NextRequest): Promise<SessionPayload 
  * Returns security-hardened cookie options for session storage
  */
 export function getSessionCookieOptions() {
-  const isProd = process.env.NODE_ENV === "production";
+  const isProd = env.NODE_ENV === "production";
   return {
     name: AUTH_COOKIE_NAME,
     httpOnly: true,

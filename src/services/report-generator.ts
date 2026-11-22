@@ -1,6 +1,7 @@
 import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
+import { env } from "@/lib/env";
 
 export interface GeneratePdfOptions {
   reportId: string;
@@ -31,7 +32,7 @@ export interface GeneratePdfOptions {
 }
 
 export async function generateSecurityPdfReport(options: GeneratePdfOptions): Promise<{ fileName: string; filePath: string }> {
-  const reportsDir = path.resolve(process.env.STORAGE_REPORTS_DIR || "./storage/reports");
+  const reportsDir = path.resolve(env.STORAGE_REPORTS_DIR);
 
   // Ensure storage/reports directory exists
   if (!fs.existsSync(reportsDir)) {

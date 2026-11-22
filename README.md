@@ -106,12 +106,13 @@ cp .env.example .env
 ```
 Edita `.env`:
 ```env
-DATABASE_URL="postgresql://app_user:secret_password@localhost:5432/scandev_db?schema=public"
-JWT_SECRET="genera_una_clave_secreta_minimo_32_caracteres_aleatorios"
+DATABASE_URL="postgresql://app_user:<contraseña>@localhost:5432/scandev_db?schema=public"
+JWT_SECRET="<secreto aleatorio de al menos 32 caracteres>"
 PORT=3000
 STORAGE_REPORTS_DIR="./storage/reports"
 NODE_ENV="development"
 ```
+Genera un secreto local con `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Configura `DATABASE_URL` y `JWT_SECRET` como secretos en el panel de Render; no uses valores predeterminados ni los guardes en Git. La aplicación valida estas variables al iniciar y no arranca si faltan o son inválidas.
 
 ### 3. Instalación de Dependencias
 ```bash
