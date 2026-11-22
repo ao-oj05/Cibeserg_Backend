@@ -174,15 +174,13 @@ export class ScanService {
    * Elimina un escaneo y sus findings en cascada (BK-05).
    */
   static async deleteScan(userId: string, scanId: string) {
-    const existing = await prisma.scan.findFirst({
+    const result = await prisma.scan.deleteMany({
       where: { id: scanId, userId },
     });
-
-    if (!existing) {
+    if (result.count === 0) {
       throw new Error('NOT_FOUND:Escaneo no encontrado o sin autorización.');
     }
 
-    await prisma.scan.delete({ where: { id: scanId } });
     return { success: true };
   }
 }
