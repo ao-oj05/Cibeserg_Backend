@@ -18,7 +18,11 @@ export const RegisterSchema = z.object({
     .regex(/[a-z]/, { message: "Debe contener al menos una letra minúscula" })
     .regex(/[0-9]/, { message: "Debe contener al menos un número" })
     .regex(/[^A-Za-z0-9]/, { message: "Debe contener al menos un carácter especial" }),
-  name: z.string().trim().min(2).max(100).optional(),
+  name: z
+    .string({ required_error: "El nombre es obligatorio" })
+    .trim()
+    .min(2, { message: "El nombre debe tener al menos 2 caracteres" })
+    .max(100, { message: "El nombre no debe exceder 100 caracteres" }),
 });
 
 /**

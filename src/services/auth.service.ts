@@ -5,7 +5,7 @@ import { AuditService } from "./audit.service";
 export interface RegisterUserDto {
   email: string;
   password: string;
-  name?: string;
+  name: string;
 }
 
 export interface LoginUserDto {
@@ -37,7 +37,7 @@ export class AuthService {
       data: {
         email: dto.email,
         passwordHash,
-        name: dto.name || null,
+        name: dto.name,
         role: "USER",
       },
       select: {
