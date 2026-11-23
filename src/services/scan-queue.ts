@@ -67,6 +67,41 @@ async function recoverAbandonedJobs(): Promise<void> {
       });
     });
   }
+
+  const recoveredCount = await prisma.$transaction(async (transaction) => {
+    await transaction.$queryRaw`
+      SELECT 1
+      FROM (SELECT pg_advisory_xact_lock(${QUEUE_CAPACITY_LOCK_ID})) AS lock_result
+    `;
+
+    const pendingCount = await transaction.scanJob.count({
+      where: { status: "PENDING" },
+    });
+    const availableSlots = MAX_PENDING_SCANS - pendingCount;
+    if (availableSlots <= 0) return 0;
+
+    const orphanedScans = await transaction.scan.findMany({
+      where: {
+        status: "PENDING",
+        createdAt: { lt: staleBefore },
+        scanJob: null,
+      },
+      orderBy: { createdAt: "asc" },
+      take: availableSlots,
+      select: { id: true },
+    });
+    if (orphanedScans.length === 0) return 0;
+
+    const result = await transaction.scanJob.createMany({
+      data: orphanedScans.map(({ id }) => ({ scanId: id })),
+      skipDuplicates: true,
+    });
+    return result.count;
+  });
+
+  if (recoveredCount > 0) {
+    console.warn(`[ScanQueue] Re-queued ${recoveredCount} orphaned pending scan(s)`);
+  }
 }
 
 async function claimPendingScan(): Promise<ClaimedScan | null> {
