@@ -165,7 +165,7 @@ La API estará disponible en `http://localhost:3000`.
 ## 📡 Referencia de la API REST
 
 ### Autenticación
-* `POST /api/auth/register` — Registro de usuario (`email`, `password`, `name`).
+* `POST /api/auth/register` — Registro de usuario (`email`, `password`, `name`); contraseña de 8 a 12 caracteres con mayúscula, minúscula, número y carácter especial.
 * `POST /api/auth/login` — Inicio de sesión; emite cookie HTTP-Only `scandev_session`.
 * `POST /api/auth/logout` — Destrucción de la cookie de sesión y registro de auditoría.
 
