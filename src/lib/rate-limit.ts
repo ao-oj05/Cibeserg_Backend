@@ -31,7 +31,8 @@ async function withRateLimitHits<T>(
   const keyDigest = digestKey(key);
   return prisma.$transaction(async (transaction) => {
     await transaction.$queryRaw`
-      SELECT pg_advisory_xact_lock(hashtextextended(${keyDigest}, 0))
+      SELECT 1
+      FROM (SELECT pg_advisory_xact_lock(hashtextextended(${keyDigest}, 0))) AS lock_result
     `;
 
     const now = Date.now();

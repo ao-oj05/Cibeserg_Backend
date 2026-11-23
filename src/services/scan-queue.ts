@@ -17,7 +17,8 @@ let lastRecoveryAt = 0;
 export async function enqueueScan(scan: RunScanOptions): Promise<boolean> {
   return prisma.$transaction(async (transaction) => {
     await transaction.$queryRaw`
-      SELECT pg_advisory_xact_lock(${QUEUE_CAPACITY_LOCK_ID})
+      SELECT 1
+      FROM (SELECT pg_advisory_xact_lock(${QUEUE_CAPACITY_LOCK_ID})) AS lock_result
     `;
 
     const pendingCount = await transaction.scanJob.count({
